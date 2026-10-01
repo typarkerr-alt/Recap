@@ -4,7 +4,7 @@ import Link from "next/link";
 import { ThemeToggle } from "@/components/ThemeToggle";
 import { SummarizePanel } from "@/components/SummarizePanel";
 import { getSource } from "@/lib/sources";
-import type { SourceId } from "@/types";
+import type { Book, BookContent, SourceId } from "@/types";
 
 interface Props {
   params: Promise<{ sourceId: string; id: string }>;
@@ -23,54 +23,69 @@ export default async function BookPage({ params }: Props) {
   const validSources = ["gutenberg", "openlibrary", "standardebooks", "upload"];
   if (!validSources.includes(sourceId)) notFound();
 
+  const source = getSource(sourceId as SourceId);
+
+  // A missing book is a real 404; missing full text is a soft error shown on the page.
+  let book: Book;
   try {
-    const source = getSource(sourceId as SourceId);
-    const [book, content] = await Promise.all([source.getBook(id), source.getContent(id)]);
+    book = await source.getBook(id);
+  } catch {
+    notFound();
+  }
 
-    const chapters = content.chapters.map(({ index, title, wordCount }) => ({ index, title, wordCount }));
-    const totalWordCount = content.totalWordCount;
-    const totalPages = content.virtualPages.length;
+  let content: BookContent | null = null;
+  let contentError: string | null = null;
+  try {
+    content = await source.getContent(id);
+  } catch (e) {
+    contentError = e instanceof Error ? e.message : "Full text not available for this book.";
+  }
 
-    return (
-      <div className="min-h-screen bg-white dark:bg-gray-950">
-        {/* Nav */}
-        <header className="flex items-center justify-between border-b border-gray-100 px-6 py-4 dark:border-gray-800">
-          <Link href="/" className="flex items-center gap-2 text-gray-900 dark:text-gray-100">
-            <span className="text-xl" aria-hidden="true">📚</span>
-            <span className="font-bold">Recap</span>
-          </Link>
-          <ThemeToggle />
-        </header>
+  const chapters = (content?.chapters ?? []).map(({ index, title, wordCount }) => ({ index, title, wordCount }));
+  const totalWordCount = content?.totalWordCount ?? 0;
+  const totalPages = content?.virtualPages.length ?? 0;
 
-        <main className="mx-auto max-w-5xl px-4 py-8">
-          {/* Book header */}
-          <div className="flex gap-6">
-            <div className="relative hidden h-48 w-32 shrink-0 overflow-hidden rounded-lg bg-gray-100 shadow-md dark:bg-gray-800 sm:block">
-              {book.coverUrl ? (
-                <Image
-                  src={book.coverUrl}
-                  alt={`Cover of ${book.title}`}
-                  fill
-                  className="object-cover"
-                  sizes="128px"
-                  unoptimized
-                />
-              ) : (
-                <div className="flex h-full items-center justify-center text-5xl" aria-hidden="true">📖</div>
-              )}
+  return (
+    <div className="min-h-screen bg-white dark:bg-gray-950">
+      {/* Nav */}
+      <header className="flex items-center justify-between border-b border-gray-100 px-6 py-4 dark:border-gray-800">
+        <Link href="/" className="flex items-center gap-2 text-gray-900 dark:text-gray-100">
+          <span className="text-xl" aria-hidden="true">📚</span>
+          <span className="font-bold">Recap</span>
+        </Link>
+        <ThemeToggle />
+      </header>
+
+      <main className="mx-auto max-w-5xl px-4 py-8">
+        {/* Book header */}
+        <div className="flex gap-6">
+          <div className="relative hidden h-48 w-32 shrink-0 overflow-hidden rounded-lg bg-gray-100 shadow-md dark:bg-gray-800 sm:block">
+            {book.coverUrl ? (
+              <Image
+                src={book.coverUrl}
+                alt={`Cover of ${book.title}`}
+                fill
+                className="object-cover"
+                sizes="128px"
+                unoptimized
+              />
+            ) : (
+              <div className="flex h-full items-center justify-center text-5xl" aria-hidden="true">📖</div>
+            )}
+          </div>
+
+          <div className="flex-1">
+            <div className="flex items-start justify-between gap-4">
+              <div>
+                <h1 className="text-2xl font-bold text-gray-900 dark:text-gray-100 sm:text-3xl">{book.title}</h1>
+                <p className="mt-1 text-gray-600 dark:text-gray-400">{book.author}</p>
+              </div>
+              <span className={`source-badge source-badge-${sourceId} shrink-0 mt-1`}>
+                {SOURCE_LABELS[sourceId] ?? sourceId}
+              </span>
             </div>
 
-            <div className="flex-1">
-              <div className="flex items-start justify-between gap-4">
-                <div>
-                  <h1 className="text-2xl font-bold text-gray-900 dark:text-gray-100 sm:text-3xl">{book.title}</h1>
-                  <p className="mt-1 text-gray-600 dark:text-gray-400">{book.author}</p>
-                </div>
-                <span className={`source-badge source-badge-${sourceId} shrink-0 mt-1`}>
-                  {SOURCE_LABELS[sourceId] ?? sourceId}
-                </span>
-              </div>
-
+            {content && (
               <div className="mt-3 flex flex-wrap gap-3 text-sm text-gray-500 dark:text-gray-400">
                 <span>{chapters.length} chapters</span>
                 <span>·</span>
@@ -84,12 +99,14 @@ export default async function BookPage({ params }: Props) {
                   </>
                 )}
               </div>
+            )}
 
-              {book.description && (
-                <p className="mt-3 text-sm text-gray-600 dark:text-gray-400 line-clamp-3">{book.description}</p>
-              )}
+            {book.description && (
+              <p className="mt-3 text-sm text-gray-600 dark:text-gray-400 line-clamp-3">{book.description}</p>
+            )}
 
-              <div className="mt-4 flex gap-3">
+            <div className="mt-4 flex gap-3">
+              {content ? (
                 <Link
                   href={`/book/${sourceId}/${encodeURIComponent(id)}/read`}
                   className="btn-primary"
@@ -97,11 +114,22 @@ export default async function BookPage({ params }: Props) {
                 >
                   Read
                 </Link>
-              </div>
+              ) : (
+                <span className="btn-primary opacity-50 cursor-not-allowed" aria-disabled="true">Read</span>
+              )}
             </div>
           </div>
+        </div>
 
-          {/* Main content grid */}
+        {/* Content error banner */}
+        {contentError && (
+          <div className="mt-8 rounded-lg border border-amber-200 bg-amber-50 px-4 py-3 text-sm text-amber-800 dark:border-amber-800 dark:bg-amber-950/40 dark:text-amber-300">
+            <strong>Full text not available:</strong> {contentError}
+          </div>
+        )}
+
+        {/* Main content grid */}
+        {content && (
           <div className="mt-10 grid gap-8 lg:grid-cols-3">
             <div className="lg:col-span-2">
               <h2 className="mb-4 font-semibold text-gray-900 dark:text-gray-100">Chapters</h2>
@@ -132,10 +160,8 @@ export default async function BookPage({ params }: Props) {
               </div>
             </div>
           </div>
-        </main>
-      </div>
-    );
-  } catch {
-    notFound();
-  }
+        )}
+      </main>
+    </div>
+  );
 }
