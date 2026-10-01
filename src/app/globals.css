@@ -1,0 +1,76 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+@layer base {
+  :root {
+    --accent: 249 115 22; /* orange-500 */
+  }
+
+  html {
+    scroll-behavior: smooth;
+  }
+
+  body {
+    @apply bg-white text-gray-900 antialiased;
+  }
+
+  .dark body {
+    @apply bg-gray-950 text-gray-100;
+  }
+}
+
+@layer components {
+  .btn-primary {
+    @apply inline-flex items-center justify-center gap-2 rounded-lg bg-accent-500 px-4 py-2 text-sm font-semibold text-white shadow-sm transition-all hover:bg-accent-600 focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-accent-500 disabled:opacity-50 disabled:cursor-not-allowed;
+  }
+
+  .btn-secondary {
+    @apply inline-flex items-center justify-center gap-2 rounded-lg border border-gray-200 px-4 py-2 text-sm font-medium text-gray-700 shadow-sm transition-all hover:bg-gray-50 focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-accent-500 dark:border-gray-700 dark:text-gray-300 dark:hover:bg-gray-800;
+  }
+
+  .card {
+    @apply rounded-xl border border-gray-200 bg-white p-4 shadow-sm dark:border-gray-800 dark:bg-gray-900;
+  }
+
+  .input {
+    @apply block w-full rounded-lg border border-gray-200 bg-white px-3 py-2 text-sm shadow-sm placeholder:text-gray-400 focus:border-accent-500 focus:outline-none focus:ring-2 focus:ring-accent-500/20 dark:border-gray-700 dark:bg-gray-900 dark:text-gray-100 dark:placeholder:text-gray-500;
+  }
+
+  .source-badge {
+    @apply inline-flex items-center rounded-full px-2 py-0.5 text-xs font-medium;
+  }
+
+  .source-badge-gutenberg {
+    @apply bg-blue-100 text-blue-700 dark:bg-blue-900/40 dark:text-blue-300;
+  }
+
+  .source-badge-openlibrary {
+    @apply bg-green-100 text-green-700 dark:bg-green-900/40 dark:text-green-300;
+  }
+
+  .source-badge-standardebooks {
+    @apply bg-purple-100 text-purple-700 dark:bg-purple-900/40 dark:text-purple-300;
+  }
+
+  .source-badge-upload {
+    @apply bg-orange-100 text-orange-700 dark:bg-orange-900/40 dark:text-orange-300;
+  }
+}
+
+/* Reader typography */
+.reader-content {
+  font-family: Georgia, "Times New Roman", serif;
+  line-height: 1.8;
+  font-size: var(--reader-font-size, 1.05rem);
+}
+
+/* Smooth SSE text reveal */
+@keyframes fadeIn {
+  from { opacity: 0; transform: translateY(2px); }
+  to { opacity: 1; transform: translateY(0); }
+}
+
+.streaming-text span {
+  animation: fadeIn 0.15s ease-out both;
+}
