@@ -1,6 +1,5 @@
 import type { SummaryOptions, SummaryLength, SummaryFormat, SummaryScope } from "@/types";
 import { getAnthropicClient, getModel } from "./client";
-import { chunkText } from "../parsing/chapters";
 
 function buildSystemPrompt(options: SummaryOptions, scope: SummaryScope): string {
   const lengthGuide: Record<SummaryLength, string> = {
@@ -59,7 +58,7 @@ export async function summarizeText(
       try {
         const anthropicStream = client.messages.stream({
           model,
-          max_tokens: 2048,
+          max_tokens: 4096,
           system: buildSystemPrompt(options, scope),
           messages: [{ role: "user", content: buildUserPrompt(text, scope) }],
         });
@@ -87,97 +86,33 @@ export async function summarizeText(
   return { stream, getFullText: () => fullTextPromise };
 }
 
-// Map-reduce for whole-book summarization
+// Single-pass whole-book summarization — concatenates all chapters and sends one API call.
+// This is vastly faster than per-chapter map-reduce and stays well within Vercel's timeout.
 export async function summarizeBook(
   chapters: Array<{ title: string; content: string }>,
   options: SummaryOptions,
-  onProgress?: (msg: string) => void
 ): Promise<{ stream: ReadableStream<Uint8Array>; getFullText: () => Promise<string> }> {
-  const client = getAnthropicClient();
-  const model = getModel();
-  const encoder = new TextEncoder();
-  let fullText = "";
-  let resolveFullText: (v: string) => void;
-  const fullTextPromise = new Promise<string>((r) => (resolveFullText = r));
+  // Build the full book text, capped at ~160k chars (~40k tokens) to fit Claude's context
+  const MAX_CHARS = 160_000;
+  const parts: string[] = [];
+  let totalChars = 0;
+  let truncated = false;
 
-  const stream = new ReadableStream<Uint8Array>({
-    async start(controller) {
-      try {
-        const chapterSummaries: string[] = [];
+  for (const ch of chapters) {
+    const part = `## ${ch.title}\n\n${ch.content}\n\n`;
+    if (totalChars + part.length > MAX_CHARS) {
+      const remaining = MAX_CHARS - totalChars;
+      if (remaining > 500) parts.push(part.slice(0, remaining) + "…");
+      truncated = true;
+      break;
+    }
+    parts.push(part);
+    totalChars += part.length;
+  }
 
-        for (let i = 0; i < chapters.length; i++) {
-          const ch = chapters[i];
-          const progressMsg = `Summarizing chapter ${i + 1} of ${chapters.length}: ${ch.title}`;
-          controller.enqueue(
-            encoder.encode(`data: ${JSON.stringify({ type: "progress", message: progressMsg })}\n\n`)
-          );
-          onProgress?.(progressMsg);
+  const bookText =
+    parts.join("") +
+    (truncated ? "\n\n(Note: Summary based on the first portion of this book.)" : "");
 
-          // Chunk long chapters
-          const chunks = chunkText(ch.content, 2000);
-          const chunkSummaries: string[] = [];
-
-          for (const chunk of chunks) {
-            const res = await client.messages.create({
-              model,
-              max_tokens: 512,
-              system: `You are summarizing chapter ${i + 1} ("${ch.title}") of a book. Write a brief, accurate 2-3 sentence summary of this passage.`,
-              messages: [{ role: "user", content: chunk }],
-            });
-            const text = res.content[0].type === "text" ? res.content[0].text : "";
-            chunkSummaries.push(text);
-          }
-
-          chapterSummaries.push(`**${ch.title}**: ${chunkSummaries.join(" ")}`);
-        }
-
-        // Final synthesis
-        controller.enqueue(
-          encoder.encode(
-            `data: ${JSON.stringify({ type: "progress", message: "Synthesizing final summary…" })}\n\n`
-          )
-        );
-
-        const synthesis = chapterSummaries.join("\n\n");
-        const finalStream = client.messages.stream({
-          model,
-          max_tokens: 2048,
-          system: buildSystemPrompt(options, "book"),
-          messages: [
-            {
-              role: "user",
-              content: `Here are summaries of each chapter:\n\n${synthesis}\n\nNow write a unified summary of the entire book.`,
-            },
-          ],
-        });
-
-        for await (const event of finalStream) {
-          if (event.type === "content_block_delta" && event.delta.type === "text_delta") {
-            fullText += event.delta.text;
-            controller.enqueue(encoder.encode(`data: ${JSON.stringify({ type: "token", text: event.delta.text })}\n\n`));
-          }
-        }
-
-        controller.enqueue(encoder.encode(`data: ${JSON.stringify({ type: "done" })}\n\n`));
-        controller.close();
-        resolveFullText(fullText);
-      } catch (err) {
-        const msg = err instanceof Error ? err.message : "Unknown error";
-
-        // Retry once on rate limit
-        if (msg.includes("429") || msg.toLowerCase().includes("rate limit")) {
-          await new Promise((r) => setTimeout(r, 5000));
-          controller.enqueue(
-            encoder.encode(`data: ${JSON.stringify({ type: "progress", message: "Rate limited — retrying…" })}\n\n`)
-          );
-        }
-
-        controller.enqueue(encoder.encode(`data: ${JSON.stringify({ type: "error", message: msg })}\n\n`));
-        controller.close();
-        resolveFullText(fullText);
-      }
-    },
-  });
-
-  return { stream, getFullText: () => fullTextPromise };
+  return summarizeText(bookText, "book", options);
 }

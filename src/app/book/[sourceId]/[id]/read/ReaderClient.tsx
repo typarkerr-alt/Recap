@@ -15,9 +15,10 @@ interface Props {
   title: string;
   chapters: Chapter[];
   initialChapter?: number;
+  contentError?: string | null;
 }
 
-export default function ReaderClient({ bookId, sourceId, title, chapters, initialChapter }: Props) {
+export default function ReaderClient({ bookId, sourceId, title, chapters, initialChapter, contentError }: Props) {
   const getChapterContent = useCallback(
     async (chapterIndex: number): Promise<{ content: string; html?: string | null }> => {
       const res = await fetch(
@@ -40,6 +41,8 @@ export default function ReaderClient({ bookId, sourceId, title, chapters, initia
       title={title}
       chapters={chapters}
       getChapterContent={getChapterContent}
+      initialChapter={initialChapter}
+      contentError={contentError}
       key={initialChapter}
     />
   );

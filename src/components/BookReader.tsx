@@ -19,12 +19,13 @@ interface Props {
   chapters: Chapter[];
   getChapterContent: (index: number) => Promise<ChapterData>;
   initialChapter?: number;
+  contentError?: string | null;
 }
 
 const FONT_SIZES = [14, 16, 18, 20, 24];
 const STORAGE_KEY_PREFIX = "recap-reader";
 
-export function BookReader({ bookId, sourceId, title, chapters, getChapterContent, initialChapter }: Props) {
+export function BookReader({ bookId, sourceId, title, chapters, getChapterContent, initialChapter, contentError }: Props) {
   const storageKey = `${STORAGE_KEY_PREFIX}-${bookId}`;
 
   const [chapterIndex, setChapterIndex] = useState(() => {
@@ -198,6 +199,11 @@ export function BookReader({ bookId, sourceId, title, chapters, getChapterConten
         {/* Reading area */}
         <main ref={mainRef} className="flex-1 overflow-y-auto px-4 py-8 sm:px-8 lg:px-16" aria-label="Book content">
           <div className="mx-auto max-w-2xl">
+            {contentError && (
+              <div className="mb-6 rounded-lg border border-amber-200 bg-amber-50 px-4 py-3 text-sm text-amber-800 dark:border-amber-800 dark:bg-amber-950/40 dark:text-amber-300">
+                <strong>Full text unavailable:</strong> {contentError}
+              </div>
+            )}
             {loading ? (
               <div className="space-y-3" aria-label="Loading…">
                 {Array.from({ length: 10 }).map((_, i) => (

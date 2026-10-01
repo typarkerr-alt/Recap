@@ -6,6 +6,9 @@ import { checkRateLimit } from "@/lib/ratelimit";
 import { getClientIp } from "@/lib/ip";
 import type { SummarizeRequest, SourceId, SummaryOptions } from "@/types";
 
+export const dynamic = "force-dynamic";
+export const maxDuration = 60;
+
 const VALID_SCOPES = ["page", "chapter", "book", "selection"];
 const VALID_LENGTHS = ["tldr", "short", "detailed"];
 const VALID_FORMATS = ["paragraph", "bullets", "takeaways"];
