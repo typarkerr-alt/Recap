@@ -1,6 +1,7 @@
 import type { Book, BookContent, SearchResult } from "@/types";
 import type { BookSource } from "./BookSource";
 import { parseHtmlChapters, parsePlainTextChapters, createVirtualPages, countWords } from "../parsing/chapters";
+import { sanitizeHtml } from "../sanitize";
 import { getCachedContent, setCachedContent } from "../summarize/cache";
 
 const GUTENDEX = "https://gutendex.com/books";
@@ -64,7 +65,10 @@ export class GutenbergSource implements BookSource {
     const text = await res.text();
 
     const isHtml = contentUrl.endsWith(".html") || text.trimStart().startsWith("<");
-    const chapters = isHtml ? parseHtmlChapters(text, id) : parsePlainTextChapters(text, id);
+    // For HTML books: keep sanitized HTML for reader display, strip text for summarization
+    const chapters = isHtml
+      ? parseHtmlChapters(sanitizeHtml(text), id, { keepHtml: true })
+      : parsePlainTextChapters(text, id);
 
     const content: BookContent = {
       bookId: id,

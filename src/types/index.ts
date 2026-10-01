@@ -21,7 +21,8 @@ export interface Chapter {
   id: string;
   index: number;
   title: string;
-  content: string;
+  content: string;      // plain text — used for word count and summarization
+  html?: string;        // sanitized HTML — used for display in reader when available
   wordCount: number;
 }
 

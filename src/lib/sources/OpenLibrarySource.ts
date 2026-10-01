@@ -20,6 +20,30 @@ function mapDoc(doc: any): SearchResult {
   };
 }
 
+async function findIaTextUrl(iaId: string): Promise<string> {
+  // Use the IA metadata API to find the actual text file rather than guessing the URL
+  const metaRes = await fetch(`${IA_BASE}/metadata/${iaId}`);
+  if (metaRes.ok) {
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const meta: any = await metaRes.json();
+    const files = (meta?.files as Array<{ name: string; format: string }>) ?? [];
+
+    const textFile =
+      files.find((f) => f.format === "DjVuTXT") ??
+      files.find((f) => f.name?.endsWith("_djvu.txt")) ??
+      files.find((f) => f.format === "Plain Text" && f.name?.endsWith(".txt")) ??
+      files.find((f) => f.format === "Abbyy GZ") ??
+      files.find((f) => f.name?.endsWith(".txt"));
+
+    if (textFile) {
+      return `${IA_BASE}/download/${iaId}/${textFile.name}`;
+    }
+  }
+
+  // Fallback: try the common _djvu.txt pattern
+  return `${IA_BASE}/stream/${iaId}/${iaId}_djvu.txt`;
+}
+
 export class OpenLibrarySource implements BookSource {
   readonly id = "openlibrary" as const;
   readonly name = "Open Library";
@@ -30,7 +54,6 @@ export class OpenLibrarySource implements BookSource {
     if (!res.ok) throw new Error(`Open Library search failed: ${res.status}`);
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     const data: any = await res.json();
-    // Filter to books with freely available full text
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     return (data.docs as any[])
       .filter((d) => d.ia && d.public_scan_b)
@@ -65,22 +88,21 @@ export class OpenLibrarySource implements BookSource {
     if (cached) return cached;
 
     // Find the Internet Archive identifier via the editions endpoint
-    const edRes = await fetch(`${OL_BASE}/works/${id}/editions.json?limit=5`);
+    const edRes = await fetch(`${OL_BASE}/works/${id}/editions.json?limit=10`);
     if (!edRes.ok) throw new Error("Could not fetch editions");
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     const editions: any = await edRes.json();
+
+    // Pick the first edition that has an ocaid (Internet Archive ID)
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    const iaId = (editions.entries as any[])
-      ?.flatMap((e) => e.ocaid ?? e.source_records ?? [])
-      ?.find((s: string) => typeof s === "string" && !s.startsWith("ia:"))
-      ?.replace("ia:", "");
+    const iaId = (editions.entries as any[])?.map((e) => e.ocaid).find((id) => typeof id === "string" && id.length > 0);
 
     if (!iaId) throw new Error("No freely readable full text found on Internet Archive");
 
-    // Download plain-text from IA
-    const textUrl = `${IA_BASE}/stream/${iaId}/${iaId}_djvu.txt`;
+    // Use the IA metadata API to find the right text file
+    const textUrl = await findIaTextUrl(iaId);
     const txtRes = await fetch(textUrl);
-    if (!txtRes.ok) throw new Error("Could not download full text from Internet Archive");
+    if (!txtRes.ok) throw new Error(`Could not download full text from Internet Archive (${txtRes.status})`);
     const text = await txtRes.text();
 
     const chapters = parsePlainTextChapters(text, id);

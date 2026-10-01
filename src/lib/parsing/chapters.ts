@@ -24,10 +24,15 @@ export function countWords(text: string): number {
   return text.trim().split(/\s+/).filter(Boolean).length;
 }
 
+interface ParseHtmlOpts {
+  // When true, each chapter also gets an `html` field with the raw body HTML
+  keepHtml?: boolean;
+}
+
 // Detect chapters from heading-based HTML
-export function parseHtmlChapters(html: string, bookId: string): Chapter[] {
+export function parseHtmlChapters(html: string, bookId: string, opts: ParseHtmlOpts = {}): Chapter[] {
   // Split on h1–h3 headings
-  const chapterPattern = /<h[1-3][^>]*>(.*?)<\/h[1-3]>/gi;
+  const chapterPattern = /<h[1-3][^>]*>([\s\S]*?)<\/h[1-3]>/gi;
   const parts = html.split(chapterPattern);
 
   const chapters: Chapter[] = [];
@@ -35,25 +40,26 @@ export function parseHtmlChapters(html: string, bookId: string): Chapter[] {
 
   // First part is preface/intro before first heading
   if (parts[0] && stripHtml(parts[0]).trim().length > 100) {
-    const content = stripHtml(parts[0]);
+    const bodyHtml = parts[0];
+    const content = stripHtml(bodyHtml);
     chapters.push({
       id: `${bookId}-ch0`,
       index: 0,
       title: "Preface",
       content,
+      html: opts.keepHtml ? bodyHtml : undefined,
       wordCount: countWords(content),
     });
   }
 
   while (i < parts.length - 1) {
-    // Odd indices are heading text, even (after 0) are body content
     const headingIndex = i % 2 === 0 ? i + 1 : i;
     const bodyIndex = headingIndex + 1;
 
     if (headingIndex < parts.length && bodyIndex < parts.length) {
       const title = stripHtml(parts[headingIndex]).trim();
-      const body = parts[bodyIndex] ?? "";
-      const content = stripHtml(body).trim();
+      const bodyHtml = parts[bodyIndex] ?? "";
+      const content = stripHtml(bodyHtml).trim();
 
       if (title && content.length > 50) {
         const idx = chapters.length;
@@ -62,6 +68,7 @@ export function parseHtmlChapters(html: string, bookId: string): Chapter[] {
           index: idx,
           title: title || `Chapter ${idx + 1}`,
           content,
+          html: opts.keepHtml ? bodyHtml : undefined,
           wordCount: countWords(content),
         });
       }
@@ -78,6 +85,7 @@ export function parseHtmlChapters(html: string, bookId: string): Chapter[] {
         index: 0,
         title: "Full Text",
         content,
+        html: opts.keepHtml ? html : undefined,
         wordCount: countWords(content),
       },
     ];
@@ -105,7 +113,6 @@ export function parsePlainTextChapters(text: string, bookId: string): Chapter[] 
   }
 
   if (chapterBoundaries.length < 2) {
-    // No detectable structure — one big chapter
     return [
       {
         id: `${bookId}-ch0`,

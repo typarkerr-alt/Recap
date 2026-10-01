@@ -12,9 +12,12 @@ export async function GET(req: NextRequest) {
     return NextResponse.json({ error: "Query too long" }, { status: 400 });
   }
 
+  const limitParam = req.nextUrl.searchParams.get("limit");
+  const limit = limitParam ? Math.min(50, Math.max(5, Number(limitParam) || 10)) : 10;
+
   const sources = getAllSources().filter((s) => s.id !== "upload");
 
-  const results = await Promise.allSettled(sources.map((s) => s.search(q, 10)));
+  const results = await Promise.allSettled(sources.map((s) => s.search(q, limit)));
 
   const combined: SearchResult[] = [];
   for (let i = 0; i < results.length; i++) {
