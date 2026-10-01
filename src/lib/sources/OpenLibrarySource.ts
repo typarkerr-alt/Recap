@@ -128,32 +128,48 @@ export class OpenLibrarySource implements BookSource {
       .map((e) => e.ocaid as string | undefined)
       .find((ocaid) => typeof ocaid === "string" && ocaid.length > 0);
 
-    if (!iaId) throw new Error("No freely readable full text found for this book.");
-
-    const textUrl = await findIaTextUrl(iaId);
-    // Use a browser-like User-Agent — IA blocks plain server requests on some items
-    const txtRes = await fetch(textUrl, {
-      headers: { "User-Agent": "Mozilla/5.0 (compatible; Recap/1.0; +https://recap.vercel.app)" },
-    });
-    if (!txtRes.ok) {
-      throw new Error(
-        txtRes.status === 401 || txtRes.status === 403
-          ? "This book requires an Internet Archive account to access. Try searching on Project Gutenberg instead."
-          : `Could not download full text (${txtRes.status})`
-      );
+    // Try IA if we have an ID
+    if (iaId) {
+      const textUrl = await findIaTextUrl(iaId);
+      const txtRes = await fetch(textUrl, {
+        headers: { "User-Agent": "Mozilla/5.0 (compatible; Recap/1.0)" },
+      });
+      if (txtRes.ok) {
+        const text = await txtRes.text();
+        const chapters = parsePlainTextChapters(text, id);
+        const content: BookContent = {
+          bookId: id,
+          sourceId: "openlibrary",
+          chapters,
+          virtualPages: createVirtualPages(chapters),
+          totalWordCount: chapters.reduce((s, c) => s + countWords(c.content), 0),
+        };
+        setCachedContent(cacheKey, content);
+        return content;
+      }
+      // IA blocked — fall through to Gutenberg title search
     }
-    const text = await txtRes.text();
 
-    const chapters = parsePlainTextChapters(text, id);
-    const content: BookContent = {
-      bookId: id,
-      sourceId: "openlibrary",
-      chapters,
-      virtualPages: createVirtualPages(chapters),
-      totalWordCount: chapters.reduce((s, c) => s + countWords(c.content), 0),
-    };
+    // Last resort: search Gutenberg by book title (covers books in PD that lack OL→Gutenberg links)
+    try {
+      const workRes = await fetch(`${OL_BASE}/works/${id}.json`, { next: { revalidate: 86400 } });
+      if (workRes.ok) {
+        const workData = await workRes.json() as { title?: string };
+        if (workData.title) {
+          const gutenberg = new GutenbergSource();
+          const hits = await gutenberg.search(workData.title, 3);
+          if (hits.length > 0) {
+            const gutenbergContent = await gutenberg.getContent(hits[0].id);
+            const content: BookContent = { ...gutenbergContent, bookId: id, sourceId: "openlibrary" };
+            setCachedContent(cacheKey, content);
+            return content;
+          }
+        }
+      }
+    } catch {}
 
-    setCachedContent(cacheKey, content);
-    return content;
+    throw new Error(
+      "Full text is not freely available for this book. It may require an Internet Archive account, or it may still be under copyright."
+    );
   }
 }
