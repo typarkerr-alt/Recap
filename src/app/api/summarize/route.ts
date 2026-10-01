@@ -3,6 +3,7 @@ import { getSource } from "@/lib/sources";
 import { summarizeText, summarizeBook } from "@/lib/summarize/summarize";
 import { makeCacheKey, getCached, setCached } from "@/lib/summarize/cache";
 import { checkRateLimit } from "@/lib/ratelimit";
+import { getClientIp } from "@/lib/ip";
 import type { SummarizeRequest, SourceId, SummaryOptions } from "@/types";
 
 const VALID_SCOPES = ["page", "chapter", "book", "selection"];
@@ -42,8 +43,8 @@ function validateRequest(body: unknown): { ok: true; data: SummarizeRequest } | 
 }
 
 export async function POST(req: NextRequest) {
-  const ip = req.headers.get("x-forwarded-for")?.split(",")[0] ?? req.headers.get("x-real-ip") ?? "unknown";
-  const rateLimit = checkRateLimit(ip);
+  const ip = getClientIp(req);
+  const rateLimit = checkRateLimit(`summarize:${ip}`);
   if (!rateLimit.allowed) {
     return NextResponse.json(
       { error: "Rate limit exceeded" },
@@ -66,21 +67,11 @@ export async function POST(req: NextRequest) {
   const cacheKey = makeCacheKey(bookId, sourceId, scope, options, String(chapterIndex ?? pageRange ?? ""));
   const cached = getCached(cacheKey);
   if (cached) {
-    // Return cached as a stream
+    // Return cached as a stream — emit the whole text as one token to preserve formatting
     const encoder = new TextEncoder();
     const stream = new ReadableStream<Uint8Array>({
       start(controller) {
-        // Send the full cached text as a single token, then done
-        const words = cached.split(/\s+/);
-        const chunks: string[] = [];
-        for (let i = 0; i < words.length; i += 50) {
-          chunks.push(words.slice(i, i + 50).join(" "));
-        }
-        for (const chunk of chunks) {
-          controller.enqueue(
-            encoder.encode(`data: ${JSON.stringify({ type: "token", text: chunk + " ", cached: true })}\n\n`)
-          );
-        }
+        controller.enqueue(encoder.encode(`data: ${JSON.stringify({ type: "token", text: cached, cached: true })}\n\n`));
         controller.enqueue(encoder.encode(`data: ${JSON.stringify({ type: "done", cached: true })}\n\n`));
         controller.close();
       },

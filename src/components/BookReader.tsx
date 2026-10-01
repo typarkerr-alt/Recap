@@ -44,11 +44,14 @@ export function BookReader({ bookId, sourceId, title, chapters, getChapterConten
 
   const fontSize = FONT_SIZES[fontSizeIndex] ?? 18;
 
-  // Load chapter content
+  const mainRef = useRef<HTMLElement>(null);
+
+  // Load chapter content and scroll to top
   useEffect(() => {
     let cancelled = false;
     setLoading(true);
     setChapterData({ content: "" });
+    mainRef.current?.scrollTo({ top: 0 });
 
     getChapterContent(chapterIndex)
       .then((data) => { if (!cancelled) { setChapterData(data); setLoading(false); } })
@@ -193,7 +196,7 @@ export function BookReader({ bookId, sourceId, title, chapters, getChapterConten
         />
 
         {/* Reading area */}
-        <main className="flex-1 overflow-y-auto px-4 py-8 sm:px-8 lg:px-16" aria-label="Book content">
+        <main ref={mainRef} className="flex-1 overflow-y-auto px-4 py-8 sm:px-8 lg:px-16" aria-label="Book content">
           <div className="mx-auto max-w-2xl">
             {loading ? (
               <div className="space-y-3" aria-label="Loading…">

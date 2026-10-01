@@ -84,6 +84,16 @@ export function SummarizePanel({
     setChapterIndex(currentChapter);
   }, [currentChapter]);
 
+  // Auto-switch scope when text is selected / deselected
+  useEffect(() => {
+    if (selectedText) {
+      setScope("selection");
+    } else if (scope === "selection") {
+      setScope("chapter");
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [selectedText]);
+
   function stop() {
     abortRef.current?.abort();
     setStreaming(false);
@@ -250,7 +260,7 @@ export function SummarizePanel({
             <p className="mb-2 text-xs font-semibold uppercase tracking-wide text-gray-500">Summarize</p>
             <div className="flex flex-wrap gap-2">
               {[
-                { value: "page" as const, label: "This page" },
+                ...(currentPage !== undefined ? [{ value: "page" as const, label: "This page" }] : []),
                 { value: "chapter" as const, label: "Chapter" },
                 { value: "book" as const, label: "Whole book" },
                 ...(selectedText ? [{ value: "selection" as const, label: "Selection" }] : []),

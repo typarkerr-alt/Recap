@@ -26,7 +26,11 @@ export function getCached(key: string): string | undefined {
 }
 
 export function setCached(key: string, value: string): void {
-  if (cache.size >= MAX_ENTRIES) {
+  // Remove existing key from order to avoid duplicate entries
+  const existing = order.indexOf(key);
+  if (existing !== -1) order.splice(existing, 1);
+
+  if (cache.size >= MAX_ENTRIES && !cache.has(key)) {
     const evict = order.shift();
     if (evict) cache.delete(evict);
   }

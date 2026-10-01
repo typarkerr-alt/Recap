@@ -28,6 +28,7 @@ export function SearchBox() {
   const [hasMore, setHasMore] = useState(false);
   const debounceRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const lastQueryRef = useRef("");
+  const searchAbortRef = useRef<AbortController | null>(null);
   const router = useRouter();
 
   function runSearch(q: string, lim = INITIAL_LIMIT) {
@@ -38,11 +39,15 @@ export function SearchBox() {
       return;
     }
     lastQueryRef.current = q;
+    // Abort any in-flight search so stale results can't overwrite newer ones
+    searchAbortRef.current?.abort();
+    searchAbortRef.current = new AbortController();
+    const signal = searchAbortRef.current.signal;
 
     startTransition(async () => {
       setError(null);
       try {
-        const res = await fetch(`/api/search?q=${encodeURIComponent(q)}&limit=${lim}`);
+        const res = await fetch(`/api/search?q=${encodeURIComponent(q)}&limit=${lim}`, { signal });
         const data = await res.json() as { results?: SearchResult[]; error?: string };
         if (!res.ok) throw new Error(data.error);
         const items = data.results ?? [];
@@ -51,6 +56,7 @@ export function SearchBox() {
         // Show "load more" if we got a full page back from any source
         setHasMore(items.length >= lim);
       } catch (e) {
+        if (e instanceof Error && e.name === "AbortError") return;
         setError(e instanceof Error ? e.message : "Search failed");
         setResults([]);
         setHasMore(false);
@@ -125,7 +131,7 @@ export function SearchBox() {
             <button
               key={c.title}
               onClick={() => {
-                setQuery(c.query);
+                setQuery(c.title);
                 runSearch(c.query);
               }}
               className="rounded-full border border-gray-200 px-3 py-1 text-sm text-gray-600 transition-colors hover:border-accent-400 hover:text-accent-600 dark:border-gray-700 dark:text-gray-400 dark:hover:border-accent-500 dark:hover:text-accent-400"

@@ -40,7 +40,7 @@ export default function Home() {
         </div>
 
         {/* Upload */}
-        <div className="mt-6 w-full max-w-2xl">
+        <div id="upload" className="mt-6 w-full max-w-2xl">
           <UploadDropzone />
           <p className="mt-2 text-xs text-center text-gray-400">
             Uploaded files are processed on-server and never stored permanently.

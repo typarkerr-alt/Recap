@@ -15,7 +15,7 @@ function mapBook(data: any): Book {
     title: data.title,
     author,
     coverUrl: data.formats?.["image/jpeg"],
-    year: data.copyright ? undefined : undefined,
+    year: undefined,
     description: (data.subjects as string[])?.slice(0, 3).join(", "),
     subjects: data.subjects,
     formats: data.formats,
@@ -28,7 +28,7 @@ export class GutenbergSource implements BookSource {
   readonly name = "Project Gutenberg";
 
   async search(query: string, limit = 20): Promise<SearchResult[]> {
-    const url = `${GUTENDEX}?search=${encodeURIComponent(query)}&languages=en`;
+    const url = `${GUTENDEX}?search=${encodeURIComponent(query)}`;
     const res = await fetch(url, { next: { revalidate: 3600 } });
     if (!res.ok) throw new Error(`Gutenberg search failed: ${res.status}`);
     // eslint-disable-next-line @typescript-eslint/no-explicit-any

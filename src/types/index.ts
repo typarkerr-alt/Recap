@@ -1,4 +1,5 @@
 export type SourceId = "gutenberg" | "openlibrary" | "standardebooks" | "upload";
+export const VALID_SOURCE_IDS = ["gutenberg", "openlibrary", "standardebooks", "upload"] as const;
 
 export interface SearchResult {
   id: string;

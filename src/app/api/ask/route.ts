@@ -2,13 +2,15 @@ import { NextRequest, NextResponse } from "next/server";
 import { getSource } from "@/lib/sources";
 import { getAnthropicClient, getModel } from "@/lib/summarize/client";
 import { checkRateLimit } from "@/lib/ratelimit";
+import { getClientIp } from "@/lib/ip";
+import { VALID_SOURCE_IDS } from "@/types";
 import type { SourceId } from "@/types";
 
 export const dynamic = "force-dynamic";
 
 export async function POST(req: NextRequest) {
-  const ip = req.headers.get("x-forwarded-for")?.split(",")[0] ?? "unknown";
-  const { allowed, retryAfter } = checkRateLimit(ip);
+  const ip = getClientIp(req);
+  const { allowed, retryAfter } = checkRateLimit(`ask:${ip}`);
   if (!allowed) {
     return NextResponse.json({ error: "Rate limit exceeded" }, { status: 429, headers: { "Retry-After": String(retryAfter) } });
   }
@@ -28,8 +30,7 @@ export async function POST(req: NextRequest) {
     return NextResponse.json({ error: "Question too long (max 1000 characters)" }, { status: 400 });
   }
 
-  const validSources = ["gutenberg", "openlibrary", "standardebooks", "upload"];
-  if (!validSources.includes(sourceId)) {
+  if (!(VALID_SOURCE_IDS as readonly string[]).includes(sourceId)) {
     return NextResponse.json({ error: "Unknown source" }, { status: 400 });
   }
 
