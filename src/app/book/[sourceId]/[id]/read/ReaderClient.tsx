@@ -15,20 +15,21 @@ interface Props {
   title: string;
   chapters: Chapter[];
   initialChapter?: number;
+  contentError?: string | null;
 }
 
-export default function ReaderClient({ bookId, sourceId, title, chapters, initialChapter }: Props) {
+export default function ReaderClient({ bookId, sourceId, title, chapters, initialChapter, contentError }: Props) {
   const getChapterContent = useCallback(
-    async (chapterIndex: number): Promise<string> => {
+    async (chapterIndex: number): Promise<{ content: string; html?: string | null }> => {
       const res = await fetch(
         `/api/book/${sourceId}/${encodeURIComponent(bookId)}/chapter/${chapterIndex}`
       );
       if (!res.ok) {
         const data = await res.json().catch(() => ({}));
-        throw new Error(data.error ?? "Failed to load chapter");
+        throw new Error((data as { error?: string }).error ?? "Failed to load chapter");
       }
-      const data = await res.json();
-      return data.content ?? "";
+      const data = await res.json() as { content: string; html?: string | null; title: string };
+      return { content: data.content ?? "", html: data.html };
     },
     [bookId, sourceId]
   );
@@ -40,6 +41,8 @@ export default function ReaderClient({ bookId, sourceId, title, chapters, initia
       title={title}
       chapters={chapters}
       getChapterContent={getChapterContent}
+      initialChapter={initialChapter}
+      contentError={contentError}
       key={initialChapter}
     />
   );

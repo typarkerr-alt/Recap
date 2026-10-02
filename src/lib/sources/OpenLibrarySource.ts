@@ -2,6 +2,7 @@ import type { Book, BookContent, SearchResult } from "@/types";
 import type { BookSource } from "./BookSource";
 import { parsePlainTextChapters, createVirtualPages, countWords } from "../parsing/chapters";
 import { getCachedContent, setCachedContent } from "../summarize/cache";
+import { GutenbergSource } from "./GutenbergSource";
 
 const OL_BASE = "https://openlibrary.org";
 const IA_BASE = "https://archive.org";
@@ -20,6 +21,30 @@ function mapDoc(doc: any): SearchResult {
   };
 }
 
+async function findIaTextUrl(iaId: string): Promise<string> {
+  // Use the IA metadata API to find the actual text file rather than guessing the URL
+  const metaRes = await fetch(`${IA_BASE}/metadata/${iaId}`);
+  if (metaRes.ok) {
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const meta: any = await metaRes.json();
+    const files = (meta?.files as Array<{ name: string; format: string }>) ?? [];
+
+    const textFile =
+      files.find((f) => f.format === "DjVuTXT") ??
+      files.find((f) => f.name?.endsWith("_djvu.txt")) ??
+      files.find((f) => f.format === "Plain Text" && f.name?.endsWith(".txt")) ??
+      files.find((f) => f.format === "Abbyy GZ") ??
+      files.find((f) => f.name?.endsWith(".txt"));
+
+    if (textFile) {
+      return `${IA_BASE}/download/${iaId}/${textFile.name}`;
+    }
+  }
+
+  // Fallback: try the common _djvu.txt pattern
+  return `${IA_BASE}/stream/${iaId}/${iaId}_djvu.txt`;
+}
+
 export class OpenLibrarySource implements BookSource {
   readonly id = "openlibrary" as const;
   readonly name = "Open Library";
@@ -30,7 +55,6 @@ export class OpenLibrarySource implements BookSource {
     if (!res.ok) throw new Error(`Open Library search failed: ${res.status}`);
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     const data: any = await res.json();
-    // Filter to books with freely available full text
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     return (data.docs as any[])
       .filter((d) => d.ia && d.public_scan_b)
@@ -44,12 +68,25 @@ export class OpenLibrarySource implements BookSource {
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     const data: any = await res.json();
 
+    // Resolve the first author reference to a human-readable name
+    const authorKey = (data.authors as Array<{ author: { key: string } }>)?.[0]?.author?.key?.replace("/authors/", "");
+    let author = "Unknown";
+    if (authorKey) {
+      try {
+        const authorRes = await fetch(`${OL_BASE}/authors/${authorKey}.json`, { next: { revalidate: 86400 } });
+        if (authorRes.ok) {
+          const authorData = await authorRes.json() as { name?: string };
+          author = authorData.name ?? "Unknown";
+        }
+      } catch {}
+    }
+
     const coverId = (data.covers as number[])?.[0];
     return {
       id,
       sourceId: "openlibrary",
       title: data.title,
-      author: "Unknown",
+      author,
       coverUrl: coverId ? `https://covers.openlibrary.org/b/id/${coverId}-L.jpg` : undefined,
       description:
         typeof data.description === "string"
@@ -64,35 +101,75 @@ export class OpenLibrarySource implements BookSource {
     const cached = getCachedContent(cacheKey);
     if (cached) return cached;
 
-    // Find the Internet Archive identifier via the editions endpoint
-    const edRes = await fetch(`${OL_BASE}/works/${id}/editions.json?limit=5`);
+    // Fetch editions to look for both a Gutenberg ID and an IA identifier
+    const edRes = await fetch(`${OL_BASE}/works/${id}/editions.json?limit=20`);
     if (!edRes.ok) throw new Error("Could not fetch editions");
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     const editions: any = await edRes.json();
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    const iaId = (editions.entries as any[])
-      ?.flatMap((e) => e.ocaid ?? e.source_records ?? [])
-      ?.find((s: string) => typeof s === "string" && !s.startsWith("ia:"))
-      ?.replace("ia:", "");
+    const entries: any[] = editions.entries ?? [];
 
-    if (!iaId) throw new Error("No freely readable full text found on Internet Archive");
+    // Prefer Gutenberg: it's publicly downloadable without IA auth restrictions
+    const gutenbergId = entries
+      .flatMap((e) => (e.identifiers?.gutenberg as string[] | undefined) ?? [])
+      .find((gid) => typeof gid === "string" && gid.length > 0);
 
-    // Download plain-text from IA
-    const textUrl = `${IA_BASE}/stream/${iaId}/${iaId}_djvu.txt`;
-    const txtRes = await fetch(textUrl);
-    if (!txtRes.ok) throw new Error("Could not download full text from Internet Archive");
-    const text = await txtRes.text();
+    if (gutenbergId) {
+      const gutenberg = new GutenbergSource();
+      const gutenbergContent = await gutenberg.getContent(gutenbergId);
+      // Remap IDs so this caches under the OL key and routes correctly
+      const content: BookContent = { ...gutenbergContent, bookId: id, sourceId: "openlibrary" };
+      setCachedContent(cacheKey, content);
+      return content;
+    }
 
-    const chapters = parsePlainTextChapters(text, id);
-    const content: BookContent = {
-      bookId: id,
-      sourceId: "openlibrary",
-      chapters,
-      virtualPages: createVirtualPages(chapters),
-      totalWordCount: chapters.reduce((s, c) => s + countWords(c.content), 0),
-    };
+    // Fall back to Internet Archive text download
+    const iaId = entries
+      .map((e) => e.ocaid as string | undefined)
+      .find((ocaid) => typeof ocaid === "string" && ocaid.length > 0);
 
-    setCachedContent(cacheKey, content);
-    return content;
+    // Try IA if we have an ID
+    if (iaId) {
+      const textUrl = await findIaTextUrl(iaId);
+      const txtRes = await fetch(textUrl, {
+        headers: { "User-Agent": "Mozilla/5.0 (compatible; Recap/1.0)" },
+      });
+      if (txtRes.ok) {
+        const text = await txtRes.text();
+        const chapters = parsePlainTextChapters(text, id);
+        const content: BookContent = {
+          bookId: id,
+          sourceId: "openlibrary",
+          chapters,
+          virtualPages: createVirtualPages(chapters),
+          totalWordCount: chapters.reduce((s, c) => s + countWords(c.content), 0),
+        };
+        setCachedContent(cacheKey, content);
+        return content;
+      }
+      // IA blocked — fall through to Gutenberg title search
+    }
+
+    // Last resort: search Gutenberg by book title (covers books in PD that lack OL→Gutenberg links)
+    try {
+      const workRes = await fetch(`${OL_BASE}/works/${id}.json`, { next: { revalidate: 86400 } });
+      if (workRes.ok) {
+        const workData = await workRes.json() as { title?: string };
+        if (workData.title) {
+          const gutenberg = new GutenbergSource();
+          const hits = await gutenberg.search(workData.title, 3);
+          if (hits.length > 0) {
+            const gutenbergContent = await gutenberg.getContent(hits[0].id);
+            const content: BookContent = { ...gutenbergContent, bookId: id, sourceId: "openlibrary" };
+            setCachedContent(cacheKey, content);
+            return content;
+          }
+        }
+      }
+    } catch {}
+
+    throw new Error(
+      "Full text is not freely available for this book. It may require an Internet Archive account, or it may still be under copyright."
+    );
   }
 }

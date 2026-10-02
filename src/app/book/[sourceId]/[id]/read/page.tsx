@@ -1,67 +1,50 @@
 import { notFound } from "next/navigation";
-import { BookReader } from "@/components/BookReader";
+import { getSource } from "@/lib/sources";
+import type { BookContent, SourceId } from "@/types";
+import ReaderClient from "./ReaderClient";
 
 interface Props {
   params: Promise<{ sourceId: string; id: string }>;
   searchParams: Promise<{ ch?: string }>;
 }
 
-async function fetchBookAndChapters(sourceId: string, id: string) {
-  const base = process.env.NEXT_PUBLIC_BASE_URL ?? "http://localhost:3000";
-  const res = await fetch(`${base}/api/book/${sourceId}/${encodeURIComponent(id)}`, {
-    next: { revalidate: 3600 },
-  });
-  if (!res.ok) return null;
-  return res.json();
-}
-
-// This is a server component that passes a serializable function to the client
-// We instead pass a path that the client will use to fetch content on demand
 export default async function ReadPage({ params, searchParams }: Props) {
   const { sourceId, id } = await params;
   const { ch } = await searchParams;
 
-  const data = await fetchBookAndChapters(sourceId, id);
-  if (!data) notFound();
+  const validSources = ["gutenberg", "openlibrary", "standardebooks", "upload"];
+  if (!validSources.includes(sourceId)) notFound();
 
-  const { book, chapters } = data;
-  const initialChapter = ch ? Math.max(0, Math.min(chapters.length - 1, Number(ch))) : undefined;
+  const source = getSource(sourceId as SourceId);
 
-  return (
-    <ReaderWrapper
-      bookId={id}
-      sourceId={sourceId}
-      title={book.title}
-      chapters={chapters}
-      initialChapter={initialChapter}
-    />
-  );
-}
+  // A missing book is a real 404; missing full text shows an error in the reader.
+  let bookTitle = "Book";
+  try {
+    const book = await source.getBook(id);
+    bookTitle = book.title;
+  } catch {
+    notFound();
+  }
 
-// Thin wrapper to pass chapter content fetcher
-function ReaderWrapper({
-  bookId,
-  sourceId,
-  title,
-  chapters,
-  initialChapter,
-}: {
-  bookId: string;
-  sourceId: string;
-  title: string;
-  chapters: Array<{ index: number; title: string; wordCount: number }>;
-  initialChapter?: number;
-}) {
+  let content: BookContent | null = null;
+  let contentError: string | null = null;
+  try {
+    content = await source.getContent(id);
+  } catch (e) {
+    contentError = e instanceof Error ? e.message : "Full text not available for this book.";
+  }
+
+  const chapters = (content?.chapters ?? []).map(({ index, title, wordCount }) => ({ index, title, wordCount }));
+  const initialChapter = ch ? Math.max(0, Math.min(Math.max(chapters.length - 1, 0), Number(ch))) : undefined;
+
   return (
     <ReaderClient
-      bookId={bookId}
+      bookId={id}
       sourceId={sourceId}
-      title={title}
+      title={bookTitle}
       chapters={chapters}
       initialChapter={initialChapter}
+      contentError={contentError}
     />
   );
 }
-
-// Client component import
-import ReaderClient from "./ReaderClient";

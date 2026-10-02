@@ -1,6 +1,7 @@
 import type { Book, BookContent, SearchResult } from "@/types";
 import type { BookSource } from "./BookSource";
 import { parseHtmlChapters, parsePlainTextChapters, createVirtualPages, countWords } from "../parsing/chapters";
+import { sanitizeHtml } from "../sanitize";
 import { getCachedContent, setCachedContent } from "../summarize/cache";
 
 const GUTENDEX = "https://gutendex.com/books";
@@ -14,7 +15,7 @@ function mapBook(data: any): Book {
     title: data.title,
     author,
     coverUrl: data.formats?.["image/jpeg"],
-    year: data.copyright ? undefined : undefined,
+    year: undefined,
     description: (data.subjects as string[])?.slice(0, 3).join(", "),
     subjects: data.subjects,
     formats: data.formats,
@@ -27,7 +28,7 @@ export class GutenbergSource implements BookSource {
   readonly name = "Project Gutenberg";
 
   async search(query: string, limit = 20): Promise<SearchResult[]> {
-    const url = `${GUTENDEX}?search=${encodeURIComponent(query)}&languages=en`;
+    const url = `${GUTENDEX}?search=${encodeURIComponent(query)}`;
     const res = await fetch(url, { next: { revalidate: 3600 } });
     if (!res.ok) throw new Error(`Gutenberg search failed: ${res.status}`);
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -64,7 +65,10 @@ export class GutenbergSource implements BookSource {
     const text = await res.text();
 
     const isHtml = contentUrl.endsWith(".html") || text.trimStart().startsWith("<");
-    const chapters = isHtml ? parseHtmlChapters(text, id) : parsePlainTextChapters(text, id);
+    // For HTML books: keep sanitized HTML for reader display, strip text for summarization
+    const chapters = isHtml
+      ? parseHtmlChapters(sanitizeHtml(text), id, { keepHtml: true })
+      : parsePlainTextChapters(text, id);
 
     const content: BookContent = {
       bookId: id,

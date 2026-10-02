@@ -10,49 +10,53 @@ interface Chapter {
   wordCount: number;
 }
 
+type ChapterData = { content: string; html?: string | null };
+
 interface Props {
   bookId: string;
   sourceId: string;
   title: string;
   chapters: Chapter[];
-  getChapterContent: (index: number) => Promise<string>;
+  getChapterContent: (index: number) => Promise<ChapterData>;
+  initialChapter?: number;
+  contentError?: string | null;
 }
 
 const FONT_SIZES = [14, 16, 18, 20, 24];
 const STORAGE_KEY_PREFIX = "recap-reader";
 
-export function BookReader({ bookId, sourceId, title, chapters, getChapterContent }: Props) {
+export function BookReader({ bookId, sourceId, title, chapters, getChapterContent, initialChapter, contentError }: Props) {
   const storageKey = `${STORAGE_KEY_PREFIX}-${bookId}`;
 
   const [chapterIndex, setChapterIndex] = useState(() => {
+    if (initialChapter !== undefined) return initialChapter;
     try { return Number(localStorage.getItem(`${storageKey}-ch`) ?? 0); } catch { return 0; }
   });
   const [fontSizeIndex, setFontSizeIndex] = useState(() => {
     try { return Number(localStorage.getItem(`${storageKey}-fs`) ?? 1); } catch { return 1; }
   });
-  const [content, setContent] = useState<string>("");
+  const [chapterData, setChapterData] = useState<ChapterData>({ content: "" });
   const [loading, setLoading] = useState(false);
   const [sidebarOpen, setSidebarOpen] = useState(false);
   const [summarizeOpen, setSummarizeOpen] = useState(false);
   const [selectedText, setSelectedText] = useState<string | undefined>();
-  const [darkMode, setDarkMode] = useState(false);
+  const [linkCopied, setLinkCopied] = useState(false);
   const contentRef = useRef<HTMLDivElement>(null);
 
   const fontSize = FONT_SIZES[fontSizeIndex] ?? 18;
 
-  useEffect(() => {
-    setDarkMode(document.documentElement.classList.contains("dark"));
-  }, []);
+  const mainRef = useRef<HTMLElement>(null);
 
-  // Load chapter content
+  // Load chapter content and scroll to top
   useEffect(() => {
     let cancelled = false;
     setLoading(true);
-    setContent("");
+    setChapterData({ content: "" });
+    mainRef.current?.scrollTo({ top: 0 });
 
     getChapterContent(chapterIndex)
-      .then((text) => { if (!cancelled) { setContent(text); setLoading(false); } })
-      .catch(() => { if (!cancelled) { setContent("Failed to load chapter."); setLoading(false); } });
+      .then((data) => { if (!cancelled) { setChapterData(data); setLoading(false); } })
+      .catch(() => { if (!cancelled) { setChapterData({ content: "Failed to load chapter." }); setLoading(false); } });
 
     return () => { cancelled = true; };
   }, [chapterIndex, getChapterContent]);
@@ -65,11 +69,50 @@ export function BookReader({ bookId, sourceId, title, chapters, getChapterConten
     } catch {}
   }, [chapterIndex, fontSizeIndex, storageKey]);
 
+  // Keyboard shortcuts: [ = prev chapter, ] = next chapter, s = summarize, t = sidebar
+  useEffect(() => {
+    function handleKeyDown(e: KeyboardEvent) {
+      if (
+        e.target instanceof HTMLInputElement ||
+        e.target instanceof HTMLTextAreaElement ||
+        e.target instanceof HTMLSelectElement
+      ) return;
+      if (e.ctrlKey || e.metaKey || e.altKey) return;
+
+      switch (e.key) {
+        case "[":
+          setChapterIndex((i) => Math.max(0, i - 1));
+          break;
+        case "]":
+          setChapterIndex((i) => Math.min(chapters.length - 1, i + 1));
+          break;
+        case "s":
+          setSummarizeOpen((o) => !o);
+          break;
+        case "t":
+          setSidebarOpen((o) => !o);
+          break;
+      }
+    }
+    window.addEventListener("keydown", handleKeyDown);
+    return () => window.removeEventListener("keydown", handleKeyDown);
+  }, [chapters.length]);
+
   // Text selection for "summarize selection"
   const handleMouseUp = useCallback(() => {
     const sel = window.getSelection()?.toString().trim();
     setSelectedText(sel && sel.length > 20 ? sel : undefined);
   }, []);
+
+  function copyChapterLink() {
+    try {
+      const url = new URL(window.location.href);
+      url.searchParams.set("ch", String(chapterIndex));
+      navigator.clipboard.writeText(url.toString());
+      setLinkCopied(true);
+      setTimeout(() => setLinkCopied(false), 2000);
+    } catch {}
+  }
 
   const chapter = chapters[chapterIndex];
 
@@ -79,7 +122,8 @@ export function BookReader({ bookId, sourceId, title, chapters, getChapterConten
       <header className="flex shrink-0 items-center gap-2 border-b border-gray-200 bg-white px-4 py-2 dark:border-gray-800 dark:bg-gray-950">
         <button
           onClick={() => setSidebarOpen(true)}
-          aria-label="Open chapter list"
+          aria-label="Open chapter list (T)"
+          title="Chapters (T)"
           className="rounded-lg p-2 text-gray-500 hover:bg-gray-100 dark:hover:bg-gray-800"
         >
           <svg xmlns="http://www.w3.org/2000/svg" className="h-5 w-5" viewBox="0 0 24 24" fill="currentColor">
@@ -91,6 +135,24 @@ export function BookReader({ bookId, sourceId, title, chapters, getChapterConten
           <p className="truncate text-sm font-semibold text-gray-900 dark:text-gray-100">{title}</p>
           {chapter && <p className="truncate text-xs text-gray-500">{chapter.title}</p>}
         </div>
+
+        {/* Copy chapter link */}
+        <button
+          onClick={copyChapterLink}
+          aria-label="Copy link to this chapter"
+          title="Copy chapter link"
+          className="rounded-lg p-2 text-gray-500 hover:bg-gray-100 dark:hover:bg-gray-800"
+        >
+          {linkCopied ? (
+            <svg xmlns="http://www.w3.org/2000/svg" className="h-4 w-4 text-green-500" viewBox="0 0 24 24" fill="currentColor">
+              <path d="M9 16.17L4.83 12l-1.42 1.41L9 19 21 7l-1.41-1.41z" />
+            </svg>
+          ) : (
+            <svg xmlns="http://www.w3.org/2000/svg" className="h-4 w-4" viewBox="0 0 24 24" fill="currentColor">
+              <path d="M17 7h-4v2h4c1.65 0 3 1.35 3 3s-1.35 3-3 3h-4v2h4c2.76 0 5-2.24 5-5s-2.24-5-5-5zm-6 8H7c-1.65 0-3-1.35-3-3s1.35-3 3-3h4V7H7c-2.76 0-5 2.24-5 5s2.24 5 5 5h4v-2zm-3-4h8v-2H8v2z" />
+            </svg>
+          )}
+        </button>
 
         {/* Font size controls */}
         <div className="flex items-center gap-1" role="group" aria-label="Font size">
@@ -116,7 +178,8 @@ export function BookReader({ bookId, sourceId, title, chapters, getChapterConten
         <button
           onClick={() => setSummarizeOpen(!summarizeOpen)}
           aria-expanded={summarizeOpen}
-          aria-label="Open summarize panel"
+          aria-label="Toggle summarize panel (S)"
+          title="Summarize (S)"
           className="btn-primary"
         >
           ✦ Summarize
@@ -134,8 +197,13 @@ export function BookReader({ bookId, sourceId, title, chapters, getChapterConten
         />
 
         {/* Reading area */}
-        <main className="flex-1 overflow-y-auto px-4 py-8 sm:px-8 lg:px-16" aria-label="Book content">
+        <main ref={mainRef} className="flex-1 overflow-y-auto px-4 py-8 sm:px-8 lg:px-16" aria-label="Book content">
           <div className="mx-auto max-w-2xl">
+            {contentError && (
+              <div className="mb-6 rounded-lg border border-amber-200 bg-amber-50 px-4 py-3 text-sm text-amber-800 dark:border-amber-800 dark:bg-amber-950/40 dark:text-amber-300">
+                <strong>Full text unavailable:</strong> {contentError}
+              </div>
+            )}
             {loading ? (
               <div className="space-y-3" aria-label="Loading…">
                 {Array.from({ length: 10 }).map((_, i) => (
@@ -156,7 +224,15 @@ export function BookReader({ bookId, sourceId, title, chapters, getChapterConten
                 {chapter && (
                   <h2 className="mb-6 text-2xl font-bold text-gray-900 dark:text-gray-100">{chapter.title}</h2>
                 )}
-                <div className="whitespace-pre-wrap leading-relaxed">{content}</div>
+                {chapterData.html ? (
+                  // Sanitized HTML from Gutenberg/Standard Ebooks — use prose renderer
+                  <div
+                    className="prose prose-gray max-w-none dark:prose-invert leading-relaxed"
+                    dangerouslySetInnerHTML={{ __html: chapterData.html }}
+                  />
+                ) : (
+                  <div className="whitespace-pre-wrap leading-relaxed">{chapterData.content}</div>
+                )}
               </div>
             )}
           </div>
@@ -198,7 +274,8 @@ export function BookReader({ bookId, sourceId, title, chapters, getChapterConten
           onClick={() => setChapterIndex((i) => Math.max(0, i - 1))}
           disabled={chapterIndex === 0}
           className="btn-secondary disabled:opacity-30"
-          aria-label="Previous chapter"
+          aria-label="Previous chapter ([)"
+          title="Previous chapter ([)"
         >
           ← Prev
         </button>
@@ -209,7 +286,8 @@ export function BookReader({ bookId, sourceId, title, chapters, getChapterConten
           onClick={() => setChapterIndex((i) => Math.min(chapters.length - 1, i + 1))}
           disabled={chapterIndex === chapters.length - 1}
           className="btn-secondary disabled:opacity-30"
-          aria-label="Next chapter"
+          aria-label="Next chapter (])"
+          title="Next chapter (])"
         >
           Next →
         </button>

@@ -25,7 +25,11 @@ export async function GET(_req: NextRequest, { params }: Params) {
     const chapter = content.chapters[idx];
     if (!chapter) return NextResponse.json({ error: "Chapter not found" }, { status: 404 });
 
-    return NextResponse.json({ content: chapter.content, title: chapter.title });
+    return NextResponse.json({
+      content: chapter.content,
+      html: chapter.html ?? null,
+      title: chapter.title,
+    });
   } catch (err) {
     const msg = err instanceof Error ? err.message : "Failed to fetch chapter";
     return NextResponse.json({ error: msg }, { status: 500 });

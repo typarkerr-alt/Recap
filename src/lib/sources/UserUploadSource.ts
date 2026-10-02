@@ -6,7 +6,7 @@ export class UserUploadSource implements BookSource {
   readonly id = "upload" as const;
   readonly name = "My Upload";
 
-  async search(_query: string): Promise<SearchResult[]> {
+  async search(): Promise<SearchResult[]> {
     // Uploads are not searchable
     return [];
   }
