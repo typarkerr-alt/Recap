@@ -1,39 +1,48 @@
 "use client";
 
-import { useCallback } from "react";
+import { useCallback, useState } from "react";
 
 interface Props {
   text: string;
+  /** What this summary was generated for, e.g. "Loomings · Short · Bullets" */
+  label?: string;
   streaming?: boolean;
   onClose?: () => void;
 }
 
-export function SummaryResult({ text, streaming, onClose }: Props) {
+export function SummaryResult({ text, label, streaming, onClose }: Props) {
+  const [copied, setCopied] = useState(false);
+
   const copy = useCallback(async () => {
-    await navigator.clipboard.writeText(text);
+    try {
+      await navigator.clipboard.writeText(text);
+      setCopied(true);
+      setTimeout(() => setCopied(false), 1500);
+    } catch {}
   }, [text]);
 
   const download = useCallback(() => {
-    const blob = new Blob([text], { type: "text/markdown" });
+    const body = label ? `# ${label}\n\n${text}\n` : text;
+    const blob = new Blob([body], { type: "text/markdown" });
     const url = URL.createObjectURL(blob);
     const a = document.createElement("a");
     a.href = url;
     a.download = "summary.md";
     a.click();
     URL.revokeObjectURL(url);
-  }, [text]);
+  }, [text, label]);
 
   return (
     <div className="rounded-xl border border-gray-200 bg-white dark:border-gray-700 dark:bg-gray-900">
       {/* Header */}
-      <div className="flex items-center justify-between border-b border-gray-100 px-4 py-2 dark:border-gray-800">
-        <span className="flex items-center gap-1.5 text-xs font-medium text-gray-500">
-          <svg className="h-3.5 w-3.5 text-accent-500" viewBox="0 0 24 24" fill="currentColor" aria-hidden="true">
-            <path d="M12 2a10 10 0 1 0 0 20A10 10 0 0 0 12 2zm1 15h-2v-6h2v6zm0-8h-2V7h2v2z" />
-          </svg>
-          AI-generated summary — may contain errors
-          {streaming && <span className="ml-1 inline-block h-2 w-2 animate-pulse rounded-full bg-accent-500" aria-label="Generating…" />}
-        </span>
+      <div className="flex items-start justify-between gap-2 border-b border-gray-100 px-4 py-2 dark:border-gray-800">
+        <div className="min-w-0">
+          {label && <p className="truncate text-xs font-semibold text-gray-700 dark:text-gray-300">{label}</p>}
+          <span className="flex items-center gap-1.5 text-xs text-gray-500">
+            AI-generated — may contain errors
+            {streaming && <span className="ml-1 inline-block h-2 w-2 animate-pulse rounded-full bg-accent-500" aria-label="Generating…" />}
+          </span>
+        </div>
         {onClose && (
           <button onClick={onClose} aria-label="Dismiss summary" className="text-gray-400 hover:text-gray-600 dark:hover:text-gray-200">
             <svg xmlns="http://www.w3.org/2000/svg" className="h-4 w-4" viewBox="0 0 24 24" fill="currentColor">
@@ -45,7 +54,7 @@ export function SummaryResult({ text, streaming, onClose }: Props) {
 
       {/* Content */}
       <div className="px-4 py-3">
-        <p className="streaming-text whitespace-pre-wrap text-sm leading-relaxed text-gray-800 dark:text-gray-200">
+        <p className="whitespace-pre-wrap text-sm leading-relaxed text-gray-800 dark:text-gray-200">
           {text}
           {streaming && <span className="ml-0.5 inline-block h-4 w-0.5 animate-pulse bg-accent-500" aria-hidden="true" />}
         </p>
@@ -55,15 +64,9 @@ export function SummaryResult({ text, streaming, onClose }: Props) {
       {!streaming && (
         <div className="flex gap-2 border-t border-gray-100 px-4 py-2 dark:border-gray-800">
           <button onClick={copy} className="btn-secondary text-xs">
-            <svg xmlns="http://www.w3.org/2000/svg" className="h-3.5 w-3.5" viewBox="0 0 24 24" fill="currentColor" aria-hidden="true">
-              <path d="M16 1H4c-1.1 0-2 .9-2 2v14h2V3h12V1zm3 4H8c-1.1 0-2 .9-2 2v14c0 1.1.9 2 2 2h11c1.1 0 2-.9 2-2V7c0-1.1-.9-2-2-2zm0 16H8V7h11v14z" />
-            </svg>
-            Copy
+            {copied ? "Copied" : "Copy"}
           </button>
           <button onClick={download} className="btn-secondary text-xs">
-            <svg xmlns="http://www.w3.org/2000/svg" className="h-3.5 w-3.5" viewBox="0 0 24 24" fill="currentColor" aria-hidden="true">
-              <path d="M19 9h-4V3H9v6H5l7 7 7-7zM5 18v2h14v-2H5z" />
-            </svg>
             Download .md
           </button>
         </div>

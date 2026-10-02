@@ -3,13 +3,7 @@
 import Image from "next/image";
 import Link from "next/link";
 import type { SearchResult } from "@/types";
-
-const SOURCE_LABELS: Record<string, string> = {
-  gutenberg: "Gutenberg",
-  openlibrary: "Open Library",
-  standardebooks: "Standard Ebooks",
-  upload: "My Upload",
-};
+import { SOURCE_SHORT_LABELS } from "@/lib/sources/labels";
 
 export function BookCard({ book }: { book: SearchResult }) {
   const href = `/book/${book.sourceId}/${encodeURIComponent(book.id)}`;
@@ -24,14 +18,7 @@ export function BookCard({ book }: { book: SearchResult }) {
       {/* Cover */}
       <div className="relative h-24 w-16 shrink-0 overflow-hidden rounded bg-gray-100 dark:bg-gray-800">
         {book.coverUrl ? (
-          <Image
-            src={book.coverUrl}
-            alt={`Cover of ${book.title}`}
-            fill
-            className="object-cover"
-            sizes="64px"
-            unoptimized
-          />
+          <Image src={book.coverUrl} alt={`Cover of ${book.title}`} fill className="object-cover" sizes="64px" unoptimized />
         ) : (
           <div className="flex h-full items-center justify-center text-2xl text-gray-300 dark:text-gray-600" aria-hidden="true">
             📖
@@ -46,13 +33,11 @@ export function BookCard({ book }: { book: SearchResult }) {
             {book.title}
           </h3>
           <span className={`source-badge source-badge-${book.sourceId} shrink-0`}>
-            {SOURCE_LABELS[book.sourceId] ?? book.sourceId}
+            {SOURCE_SHORT_LABELS[book.sourceId] ?? book.sourceId}
           </span>
         </div>
         <p className="mt-0.5 text-sm text-gray-600 dark:text-gray-400">{book.author}</p>
-        {book.year && (
-          <p className="mt-0.5 text-xs text-gray-400 dark:text-gray-500">{book.year}</p>
-        )}
+        {book.year && <p className="mt-0.5 text-xs text-gray-400 dark:text-gray-500">{book.year}</p>}
         {book.description && (
           <p className="mt-1 line-clamp-2 text-xs text-gray-500 dark:text-gray-400">{book.description}</p>
         )}

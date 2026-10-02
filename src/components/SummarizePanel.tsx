@@ -2,25 +2,34 @@
 
 import { useState, useEffect, useRef } from "react";
 import type { SummaryOptions, SummaryScope, SummarizeRequest } from "@/types";
+import { postSSE } from "@/lib/sseClient";
 import { SummaryResult } from "./SummaryResult";
+
+interface ChapterRef {
+  index: number;
+  title: string;
+}
 
 interface Props {
   bookId: string;
   sourceId: string;
-  totalChapters: number;
+  chapters: ChapterRef[];
   currentChapter?: number;
   currentPage?: number;
   selectedText?: string;
   onClose?: () => void;
 }
 
-const LENGTH_OPTIONS: { value: SummaryOptions["length"]; label: string; desc: string }[] = [
+type Length = SummaryOptions["length"];
+type Format = SummaryOptions["format"];
+
+const LENGTH_OPTIONS: { value: Length; label: string; desc: string }[] = [
   { value: "tldr", label: "TL;DR", desc: "2-3 sentences" },
   { value: "short", label: "Short", desc: "1-2 paragraphs" },
   { value: "detailed", label: "Detailed", desc: "Comprehensive" },
 ];
 
-const FORMAT_OPTIONS: { value: SummaryOptions["format"]; label: string }[] = [
+const FORMAT_OPTIONS: { value: Format; label: string }[] = [
   { value: "paragraph", label: "Prose" },
   { value: "bullets", label: "Bullets" },
   { value: "takeaways", label: "Takeaways" },
@@ -28,18 +37,41 @@ const FORMAT_OPTIONS: { value: SummaryOptions["format"]; label: string }[] = [
 
 const OPTS_KEY = "recap-summary-opts";
 
-function loadOpts(): { length: SummaryOptions["length"]; format: SummaryOptions["format"] } {
+interface SavedOpts {
+  length: Length;
+  format: Format;
+  spoilerFree: boolean;
+}
+
+// Validates what's in localStorage — a stale/garbled value used to make every request 400
+function loadOpts(): SavedOpts | null {
   try {
-    const raw = localStorage.getItem(OPTS_KEY);
-    if (raw) return JSON.parse(raw);
+    const raw = JSON.parse(localStorage.getItem(OPTS_KEY) ?? "null");
+    if (!raw) return null;
+    return {
+      length: LENGTH_OPTIONS.some((o) => o.value === raw.length) ? raw.length : "short",
+      format: FORMAT_OPTIONS.some((o) => o.value === raw.format) ? raw.format : "paragraph",
+      spoilerFree: raw.spoilerFree === true,
+    };
+  } catch {
+    return null;
+  }
+}
+
+function saveOpts(opts: SavedOpts) {
+  try {
+    localStorage.setItem(OPTS_KEY, JSON.stringify(opts));
   } catch {}
-  return { length: "short", format: "paragraph" };
+}
+
+function shorten(s: string, n = 60) {
+  return s.length > n ? `${s.slice(0, n - 1)}…` : s;
 }
 
 export function SummarizePanel({
   bookId,
   sourceId,
-  totalChapters,
+  chapters,
   currentChapter = 0,
   currentPage,
   selectedText,
@@ -47,11 +79,12 @@ export function SummarizePanel({
 }: Props) {
   const [scope, setScope] = useState<SummaryScope>(selectedText ? "selection" : "chapter");
   const [chapterIndex, setChapterIndex] = useState(currentChapter);
-  const [length, setLength] = useState<SummaryOptions["length"]>("short");
-  const [format, setFormat] = useState<SummaryOptions["format"]>("paragraph");
+  const [length, setLength] = useState<Length>("short");
+  const [format, setFormat] = useState<Format>("paragraph");
   const [spoilerFree, setSpoilerFree] = useState(false);
   const [streaming, setStreaming] = useState(false);
   const [summaryText, setSummaryText] = useState<string | null>(null);
+  const [summaryLabel, setSummaryLabel] = useState<string>("");
   const [error, setError] = useState<string | null>(null);
   const [progressMsg, setProgressMsg] = useState<string | null>(null);
 
@@ -65,34 +98,63 @@ export function SummarizePanel({
   const abortRef = useRef<AbortController | null>(null);
   const askAbortRef = useRef<AbortController | null>(null);
 
-  // Load persisted options once on mount
+  // Restore saved options once. Saving happens only on user clicks — the old
+  // "persist on change" effect could overwrite saved choices with defaults on mount.
   useEffect(() => {
     const saved = loadOpts();
-    setLength(saved.length);
-    setFormat(saved.format);
+    if (saved) {
+      setLength(saved.length);
+      setFormat(saved.format);
+      setSpoilerFree(saved.spoilerFree);
+    }
   }, []);
 
-  // Persist options when they change
-  useEffect(() => {
-    try {
-      localStorage.setItem(OPTS_KEY, JSON.stringify({ length, format }));
-    } catch {}
-  }, [length, format]);
+  function chooseLength(v: Length) {
+    setLength(v);
+    saveOpts({ length: v, format, spoilerFree });
+  }
+  function chooseFormat(v: Format) {
+    setFormat(v);
+    saveOpts({ length, format: v, spoilerFree });
+  }
+  function chooseSpoiler(v: boolean) {
+    setSpoilerFree(v);
+    saveOpts({ length, format, spoilerFree: v });
+  }
 
-  // Keep chapter index in sync when currentChapter changes
+  // Follow the reader's current chapter
   useEffect(() => {
-    setChapterIndex(currentChapter);
-  }, [currentChapter]);
+    setChapterIndex(Math.min(Math.max(currentChapter, 0), Math.max(chapters.length - 1, 0)));
+  }, [currentChapter, chapters.length]);
 
   // Auto-switch scope when text is selected / deselected
   useEffect(() => {
-    if (selectedText) {
-      setScope("selection");
-    } else if (scope === "selection") {
-      setScope("chapter");
-    }
-    // eslint-disable-next-line react-hooks/exhaustive-deps
+    if (selectedText) setScope("selection");
+    else setScope((s) => (s === "selection" ? "chapter" : s));
   }, [selectedText]);
+
+  // Stop any in-flight request if the panel unmounts
+  useEffect(() => {
+    return () => {
+      abortRef.current?.abort();
+      askAbortRef.current?.abort();
+    };
+  }, []);
+
+  const chapterTitle = chapters[chapterIndex]?.title ?? `Chapter ${chapterIndex + 1}`;
+
+  function describeTarget(): string {
+    switch (scope) {
+      case "chapter":
+        return shorten(chapterTitle, 40);
+      case "book":
+        return "Whole book";
+      case "page":
+        return `Page ${currentPage}`;
+      case "selection":
+        return "Selection";
+    }
+  }
 
   function stop() {
     abortRef.current?.abort();
@@ -107,12 +169,17 @@ export function SummarizePanel({
 
   async function run() {
     abortRef.current?.abort();
-    abortRef.current = new AbortController();
+    const controller = new AbortController();
+    abortRef.current = controller;
+
+    const lengthLabel = LENGTH_OPTIONS.find((o) => o.value === length)?.label;
+    const formatLabel = FORMAT_OPTIONS.find((o) => o.value === format)?.label;
+    setSummaryLabel([describeTarget(), lengthLabel, formatLabel, spoilerFree ? "Spoiler-free" : ""].filter(Boolean).join(" · "));
 
     setStreaming(true);
     setSummaryText(null);
     setError(null);
-    setProgressMsg(null);
+    setProgressMsg(scope === "book" ? "Fetching the book…" : null);
 
     const req: SummarizeRequest = {
       bookId,
@@ -124,57 +191,25 @@ export function SummarizePanel({
       options: { length, format, spoilerFree },
     };
 
+    let accumulated = "";
     try {
-      const res = await fetch("/api/summarize", {
-        method: "POST",
-        signal: abortRef.current.signal,
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify(req),
-      });
-
-      if (!res.ok) {
-        const data = await res.json();
-        throw new Error((data as { error?: string }).error ?? "Summarization failed");
-      }
-
-      const reader = res.body?.getReader();
-      if (!reader) throw new Error("No response stream");
-
-      const decoder = new TextDecoder();
-      let accumulated = "";
-
-      while (true) {
-        const { done, value } = await reader.read();
-        if (done) break;
-
-        const text = decoder.decode(value, { stream: true });
-        const lines = text.split("\n");
-        for (const line of lines) {
-          if (!line.startsWith("data: ")) continue;
-          try {
-            const parsed = JSON.parse(line.slice(6)) as { type: string; text?: string; message?: string };
-            if (parsed.type === "token") {
-              accumulated += parsed.text ?? "";
-              setSummaryText(accumulated);
-            } else if (parsed.type === "progress") {
-              setProgressMsg(parsed.message ?? null);
-            } else if (parsed.type === "error") {
-              throw new Error(parsed.message);
-            } else if (parsed.type === "done") {
-              setProgressMsg(null);
-            }
-          } catch (e) {
-            if (e instanceof SyntaxError) continue;
-            throw e;
-          }
+      await postSSE("/api/summarize", req, controller.signal, (event) => {
+        if (event.type === "token") {
+          accumulated += event.text ?? "";
+          setSummaryText(accumulated);
+          setProgressMsg(null);
+        } else if (event.type === "progress") {
+          setProgressMsg(event.message ?? null);
         }
-      }
+      });
     } catch (e) {
       if (e instanceof Error && e.name === "AbortError") return;
       setError(e instanceof Error ? e.message : "Something went wrong");
     } finally {
-      setStreaming(false);
-      setProgressMsg(null);
+      if (abortRef.current === controller) {
+        setStreaming(false);
+        setProgressMsg(null);
+      }
     }
   }
 
@@ -182,58 +217,46 @@ export function SummarizePanel({
     if (!question.trim()) return;
 
     askAbortRef.current?.abort();
-    askAbortRef.current = new AbortController();
+    const controller = new AbortController();
+    askAbortRef.current = controller;
 
     setAskStreaming(true);
     setAskText(null);
     setAskError(null);
 
+    let accumulated = "";
     try {
-      const res = await fetch("/api/ask", {
-        method: "POST",
-        signal: askAbortRef.current.signal,
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ bookId, sourceId, chapterIndex, question }),
-      });
-
-      if (!res.ok) {
-        const data = await res.json();
-        throw new Error((data as { error?: string }).error ?? "Failed to answer question");
-      }
-
-      const reader = res.body?.getReader();
-      if (!reader) throw new Error("No response stream");
-
-      const decoder = new TextDecoder();
-      let accumulated = "";
-
-      while (true) {
-        const { done, value } = await reader.read();
-        if (done) break;
-        const text = decoder.decode(value, { stream: true });
-        for (const line of text.split("\n")) {
-          if (!line.startsWith("data: ")) continue;
-          try {
-            const parsed = JSON.parse(line.slice(6)) as { type: string; text?: string; message?: string };
-            if (parsed.type === "token") {
-              accumulated += parsed.text ?? "";
-              setAskText(accumulated);
-            } else if (parsed.type === "error") {
-              throw new Error(parsed.message);
-            }
-          } catch (e) {
-            if (e instanceof SyntaxError) continue;
-            throw e;
-          }
+      await postSSE("/api/ask", { bookId, sourceId, chapterIndex, question }, controller.signal, (event) => {
+        if (event.type === "token") {
+          accumulated += event.text ?? "";
+          setAskText(accumulated);
         }
-      }
+      });
     } catch (e) {
       if (e instanceof Error && e.name === "AbortError") return;
       setAskError(e instanceof Error ? e.message : "Something went wrong");
     } finally {
-      setAskStreaming(false);
+      if (askAbortRef.current === controller) setAskStreaming(false);
     }
   }
+
+  const chapterSelect = (
+    <div className="mt-2">
+      <label htmlFor="chapter-select" className="sr-only">Select chapter</label>
+      <select
+        id="chapter-select"
+        value={chapterIndex}
+        onChange={(e) => setChapterIndex(Number(e.target.value))}
+        className="input"
+      >
+        {chapters.map((ch, i) => (
+          <option key={ch.index} value={i}>
+            {i + 1}. {shorten(ch.title)}
+          </option>
+        ))}
+      </select>
+    </div>
+  );
 
   return (
     <div className="flex flex-col gap-4" role="dialog" aria-label="Summarize options">
@@ -280,20 +303,12 @@ export function SummarizePanel({
               ))}
             </div>
 
-            {scope === "chapter" && (
-              <div className="mt-2">
-                <label htmlFor="chapter-select" className="sr-only">Select chapter</label>
-                <select
-                  id="chapter-select"
-                  value={chapterIndex}
-                  onChange={(e) => setChapterIndex(Number(e.target.value))}
-                  className="input"
-                >
-                  {Array.from({ length: totalChapters }, (_, i) => (
-                    <option key={i} value={i}>Chapter {i + 1}</option>
-                  ))}
-                </select>
-              </div>
+            {scope === "chapter" && chapterSelect}
+            {scope === "book" && (
+              <p className="mt-2 text-xs text-gray-500">Long books take a minute or two the first time — the whole text is read, not just the opening.</p>
+            )}
+            {scope === "selection" && selectedText && (
+              <p className="mt-2 line-clamp-2 text-xs italic text-gray-500">“{shorten(selectedText, 140)}”</p>
             )}
           </div>
 
@@ -304,7 +319,7 @@ export function SummarizePanel({
               {LENGTH_OPTIONS.map((o) => (
                 <button
                   key={o.value}
-                  onClick={() => setLength(o.value)}
+                  onClick={() => chooseLength(o.value)}
                   aria-pressed={length === o.value}
                   className={`flex flex-col rounded-lg border p-2 text-left transition-all ${
                     length === o.value
@@ -326,7 +341,7 @@ export function SummarizePanel({
               {FORMAT_OPTIONS.map((o) => (
                 <button
                   key={o.value}
-                  onClick={() => setFormat(o.value)}
+                  onClick={() => chooseFormat(o.value)}
                   aria-pressed={format === o.value}
                   className={`rounded-full px-3 py-1.5 text-sm font-medium transition-colors ${
                     format === o.value
@@ -345,29 +360,28 @@ export function SummarizePanel({
             <input
               type="checkbox"
               checked={spoilerFree}
-              onChange={(e) => setSpoilerFree(e.target.checked)}
+              onChange={(e) => chooseSpoiler(e.target.checked)}
               className="h-4 w-4 rounded border-gray-300 text-accent-500 focus:ring-accent-500"
             />
             Spoiler-free mode
           </label>
 
           {/* Generate / Stop */}
-          <div className="flex gap-2">
-            <button
-              onClick={streaming ? stop : run}
-              className={streaming ? "btn-secondary w-full" : "btn-primary w-full"}
-              aria-busy={streaming}
-            >
-              {streaming ? (
-                <span className="flex items-center justify-center gap-2">
-                  <span className="h-4 w-4 animate-spin rounded-full border-2 border-current/30 border-t-current" />
-                  Stop
-                </span>
-              ) : (
-                "Generate Summary"
-              )}
-            </button>
-          </div>
+          <button
+            onClick={streaming ? stop : run}
+            disabled={!streaming && chapters.length === 0 && scope !== "selection"}
+            className={streaming ? "btn-secondary w-full" : "btn-primary w-full"}
+            aria-busy={streaming}
+          >
+            {streaming ? (
+              <span className="flex items-center justify-center gap-2">
+                <span className="h-4 w-4 animate-spin rounded-full border-2 border-current/30 border-t-current" />
+                Stop
+              </span>
+            ) : (
+              "Generate Summary"
+            )}
+          </button>
 
           {progressMsg && (
             <p className="text-xs text-gray-500" role="status" aria-live="polite">{progressMsg}</p>
@@ -380,15 +394,24 @@ export function SummarizePanel({
           )}
 
           {summaryText && (
-            <SummaryResult text={summaryText} streaming={streaming} onClose={() => { setSummaryText(null); onClose?.(); }} />
+            <SummaryResult
+              text={summaryText}
+              label={summaryLabel}
+              streaming={streaming}
+              onClose={() => {
+                setSummaryText(null);
+                onClose?.();
+              }}
+            />
           )}
         </>
       ) : (
         /* Ask a question mode */
         <div className="flex flex-col gap-4">
-          <p className="text-sm text-gray-600 dark:text-gray-400">
-            Ask anything about <strong>Chapter {chapterIndex + 1}</strong>.
-          </p>
+          <div>
+            <p className="text-sm text-gray-600 dark:text-gray-400">Ask anything about this chapter:</p>
+            {chapterSelect}
+          </div>
           <div>
             <label htmlFor="question-input" className="sr-only">Your question</label>
             <textarea
@@ -430,7 +453,7 @@ export function SummarizePanel({
           )}
 
           {askText && (
-            <div className="rounded-xl border border-gray-200 bg-gray-50 p-3 text-sm text-gray-800 dark:border-gray-700 dark:bg-gray-900 dark:text-gray-200 leading-relaxed whitespace-pre-wrap">
+            <div className="rounded-xl border border-gray-200 bg-gray-50 p-3 text-sm leading-relaxed whitespace-pre-wrap text-gray-800 dark:border-gray-700 dark:bg-gray-900 dark:text-gray-200">
               {askText}
               {askStreaming && <span className="ml-0.5 inline-block h-4 w-0.5 animate-pulse bg-accent-500 align-middle" />}
             </div>

@@ -1,6 +1,10 @@
 import { NextRequest, NextResponse } from "next/server";
 import { getSource } from "@/lib/sources";
+import { VALID_SOURCE_IDS } from "@/types";
 import type { SourceId } from "@/types";
+
+export const runtime = "nodejs";
+export const maxDuration = 60;
 
 interface Params {
   params: Promise<{ sourceId: string; id: string }>;
@@ -12,9 +16,7 @@ export async function GET(_req: NextRequest, { params }: Params) {
   if (!id || id.length > 200) {
     return NextResponse.json({ error: "Invalid book ID" }, { status: 400 });
   }
-
-  const validSources = ["gutenberg", "openlibrary", "standardebooks", "upload"];
-  if (!validSources.includes(sourceId)) {
+  if (!(VALID_SOURCE_IDS as readonly string[]).includes(sourceId)) {
     return NextResponse.json({ error: "Unknown source" }, { status: 400 });
   }
 
@@ -23,12 +25,7 @@ export async function GET(_req: NextRequest, { params }: Params) {
     const [book, content] = await Promise.all([source.getBook(id), source.getContent(id)]);
 
     // Strip chapter content from the book endpoint — content is large
-    const chapters = content.chapters.map(({ id: cid, index, title, wordCount }) => ({
-      id: cid,
-      index,
-      title,
-      wordCount,
-    }));
+    const chapters = content.chapters.map(({ id: cid, index, title, wordCount }) => ({ id: cid, index, title, wordCount }));
 
     return NextResponse.json({
       book,

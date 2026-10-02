@@ -4,8 +4,25 @@ import { storeUpload } from "@/lib/summarize/cache";
 import { parseEpub } from "@/lib/parsing/epub";
 import { parsePdf } from "@/lib/parsing/pdf";
 import { parsePlainTextChapters, createVirtualPages, countWords } from "@/lib/parsing/chapters";
+import type { BookContent } from "@/types";
 
-const MAX_FILE_SIZE = 50 * 1024 * 1024; // 50 MB
+export const runtime = "nodejs";
+export const maxDuration = 60;
+
+// Vercel Functions reject request bodies over 4.5 MB before this code runs.
+// 4 MB leaves room for multipart overhead.
+const MAX_FILE_SIZE = 4 * 1024 * 1024;
+
+function fromText(text: string, bookId: string): BookContent {
+  const chapters = parsePlainTextChapters(text, bookId);
+  return {
+    bookId,
+    sourceId: "upload",
+    chapters,
+    virtualPages: createVirtualPages(chapters),
+    totalWordCount: chapters.reduce((s, c) => s + countWords(c.content), 0),
+  };
+}
 
 export async function POST(req: NextRequest) {
   let formData: FormData;
@@ -23,22 +40,16 @@ export async function POST(req: NextRequest) {
   }
 
   const bookId = uuidv4();
+  const title = file?.name?.replace(/\.[^.]+$/, "") || "Pasted Text";
 
   try {
-    let content;
+    let content: BookContent | undefined;
 
     if (pastedText) {
-      const chapters = parsePlainTextChapters(pastedText, bookId);
-      content = {
-        bookId,
-        sourceId: "upload" as const,
-        chapters,
-        virtualPages: createVirtualPages(chapters),
-        totalWordCount: chapters.reduce((s, c) => s + countWords(c.content), 0),
-      };
+      content = fromText(pastedText, bookId);
     } else if (file) {
       if (file.size > MAX_FILE_SIZE) {
-        return NextResponse.json({ error: "File too large (max 50 MB)" }, { status: 413 });
+        return NextResponse.json({ error: "File too large (max 4 MB)" }, { status: 413 });
       }
 
       const ext = file.name.split(".").pop()?.toLowerCase();
@@ -49,31 +60,20 @@ export async function POST(req: NextRequest) {
       } else if (ext === "pdf") {
         content = await parsePdf(buffer, bookId);
       } else if (ext === "txt" || ext === "text") {
-        const text = buffer.toString("utf-8");
-        const chapters = parsePlainTextChapters(text, bookId);
-        content = {
-          bookId,
-          sourceId: "upload" as const,
-          chapters,
-          virtualPages: createVirtualPages(chapters),
-          totalWordCount: chapters.reduce((s, c) => s + countWords(c.content), 0),
-        };
+        content = fromText(buffer.toString("utf-8"), bookId);
       } else {
-        return NextResponse.json(
-          { error: "Unsupported file type. Upload EPUB, PDF, or TXT." },
-          { status: 400 }
-        );
+        return NextResponse.json({ error: "Unsupported file type. Upload EPUB, PDF, or TXT." }, { status: 400 });
       }
     }
 
     if (!content) throw new Error("Failed to process file");
 
-    storeUpload(bookId, content);
+    await storeUpload(bookId, content, title);
 
     return NextResponse.json({
       bookId,
       sourceId: "upload",
-      title: file?.name?.replace(/\.[^.]+$/, "") ?? "Pasted Text",
+      title,
       chapters: content.chapters.map(({ id, index, title, wordCount }) => ({ id, index, title, wordCount })),
       totalWordCount: content.totalWordCount,
       totalPages: content.virtualPages.length,

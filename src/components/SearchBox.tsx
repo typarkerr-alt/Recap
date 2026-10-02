@@ -11,7 +11,7 @@ const CLASSICS = [
   { title: "Frankenstein", query: "Frankenstein Shelley" },
   { title: "Moby Dick", query: "Moby Dick Melville" },
   { title: "The Great Gatsby", query: "Great Gatsby Fitzgerald" },
-  { title: "1984", query: "1984 Orwell" },
+  { title: "Dracula", query: "Dracula Stoker" },
   { title: "Jane Eyre", query: "Jane Eyre Bronte" },
 ];
 

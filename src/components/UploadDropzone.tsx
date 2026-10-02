@@ -3,6 +3,10 @@
 import { useCallback, useState } from "react";
 import { useRouter } from "next/navigation";
 
+// Vercel Functions reject request bodies over 4.5 MB (with a non-JSON error page),
+// so check on the client and explain instead of failing mysteriously.
+const MAX_FILE_SIZE = 4 * 1024 * 1024;
+
 export function UploadDropzone() {
   const [dragging, setDragging] = useState(false);
   const [uploading, setUploading] = useState(false);
@@ -13,6 +17,11 @@ export function UploadDropzone() {
 
   const upload = useCallback(
     async (file?: File, text?: string) => {
+      if (file && file.size > MAX_FILE_SIZE) {
+        setError(`That file is ${(file.size / 1024 / 1024).toFixed(1)} MB. The limit is 4 MB — try the EPUB or TXT version, or paste the chapters you need.`);
+        return;
+      }
+
       setUploading(true);
       setError(null);
       try {
@@ -21,8 +30,10 @@ export function UploadDropzone() {
         if (text) form.append("text", text);
 
         const res = await fetch("/api/upload", { method: "POST", body: form });
-        const data = await res.json();
-        if (!res.ok) throw new Error(data.error);
+        const data = (await res.json().catch(() => ({}))) as { bookId?: string; error?: string };
+        if (!res.ok || !data.bookId) {
+          throw new Error(data.error ?? (res.status === 413 ? "File too large (max 4 MB)." : `Upload failed (${res.status})`));
+        }
 
         router.push(`/book/upload/${data.bookId}`);
       } catch (e) {
@@ -47,14 +58,18 @@ export function UploadDropzone() {
     (e: React.ChangeEvent<HTMLInputElement>) => {
       const file = e.target.files?.[0];
       if (file) upload(file);
+      e.target.value = ""; // allow re-selecting the same file
     },
     [upload]
   );
 
   return (
-    <div id="upload" className="w-full max-w-2xl">
+    <div className="w-full max-w-2xl">
       <div
-        onDragOver={(e) => { e.preventDefault(); setDragging(true); }}
+        onDragOver={(e) => {
+          e.preventDefault();
+          setDragging(true);
+        }}
         onDragLeave={() => setDragging(false)}
         onDrop={onDrop}
         className={`relative rounded-2xl border-2 border-dashed p-8 text-center transition-all ${
@@ -66,14 +81,14 @@ export function UploadDropzone() {
       >
         {uploading ? (
           <div className="flex flex-col items-center gap-3">
-            <div className="h-8 w-8 animate-spin rounded-full border-3 border-gray-200 border-t-accent-500" />
+            <div className="h-8 w-8 animate-spin rounded-full border-2 border-gray-200 border-t-accent-500" />
             <p className="text-sm text-gray-500">Processing your book…</p>
           </div>
         ) : (
           <>
             <div className="text-4xl" aria-hidden="true">📤</div>
             <p className="mt-2 font-medium text-gray-700 dark:text-gray-300">Drop your book here</p>
-            <p className="mt-1 text-sm text-gray-500">EPUB, PDF, or TXT — up to 50 MB</p>
+            <p className="mt-1 text-sm text-gray-500">EPUB, PDF, or TXT — up to 4 MB</p>
             <div className="mt-4 flex flex-col items-center gap-2 sm:flex-row sm:justify-center">
               <label className="btn-primary cursor-pointer">
                 Browse file
@@ -85,11 +100,7 @@ export function UploadDropzone() {
                   aria-label="Choose a file to upload"
                 />
               </label>
-              <button
-                onClick={() => setShowPaste(!showPaste)}
-                className="btn-secondary"
-                aria-expanded={showPaste}
-              >
+              <button onClick={() => setShowPaste(!showPaste)} className="btn-secondary" aria-expanded={showPaste}>
                 Paste text
               </button>
             </div>
@@ -109,7 +120,9 @@ export function UploadDropzone() {
             className="input resize-y"
           />
           <button
-            onClick={() => { if (pastedText.trim()) upload(undefined, pastedText.trim()); }}
+            onClick={() => {
+              if (pastedText.trim()) upload(undefined, pastedText.trim());
+            }}
             disabled={!pastedText.trim() || uploading}
             className="btn-primary mt-2"
           >

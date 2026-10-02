@@ -1,14 +1,19 @@
 import type { BookSource } from "./BookSource";
 import { GutenbergSource } from "./GutenbergSource";
 import { OpenLibrarySource } from "./OpenLibrarySource";
-import { StandardEbooksSource } from "./StandardEbooksSource";
+import { InternetArchiveSource } from "./InternetArchiveSource";
+import { LibraryOfCongressSource } from "./LibraryOfCongressSource";
 import { UserUploadSource } from "./UserUploadSource";
 import type { SourceId } from "@/types";
 
+export { searchDpla, dplaEnabled } from "./DplaSearch";
+
+// Order = priority in search results (cleanest text first)
 const sources: BookSource[] = [
   new GutenbergSource(),
   new OpenLibrarySource(),
-  new StandardEbooksSource(),
+  new InternetArchiveSource(),
+  new LibraryOfCongressSource(),
   new UserUploadSource(),
 ];
 
@@ -22,4 +27,9 @@ export function getSource(id: SourceId): BookSource {
 
 export function getAllSources(): BookSource[] {
   return sources;
+}
+
+/** Sources that support search (uploads don't) */
+export function getSearchableSources(): BookSource[] {
+  return sources.filter((s) => s.id !== "upload");
 }

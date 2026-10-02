@@ -12,6 +12,12 @@ interface Chapter {
 
 type ChapterData = { content: string; html?: string | null };
 
+export interface PrefetchedChapter {
+  index: number;
+  content: string;
+  html: string | null;
+}
+
 interface Props {
   bookId: string;
   sourceId: string;
@@ -19,55 +25,107 @@ interface Props {
   chapters: Chapter[];
   getChapterContent: (index: number) => Promise<ChapterData>;
   initialChapter?: number;
+  prefetched?: PrefetchedChapter;
   contentError?: string | null;
 }
 
 const FONT_SIZES = [14, 16, 18, 20, 24];
 const STORAGE_KEY_PREFIX = "recap-reader";
 
-export function BookReader({ bookId, sourceId, title, chapters, getChapterContent, initialChapter, contentError }: Props) {
-  const storageKey = `${STORAGE_KEY_PREFIX}-${bookId}`;
+function clamp(n: number, max: number) {
+  return Number.isFinite(n) ? Math.min(Math.max(0, Math.floor(n)), Math.max(0, max)) : 0;
+}
 
-  const [chapterIndex, setChapterIndex] = useState(() => {
-    if (initialChapter !== undefined) return initialChapter;
-    try { return Number(localStorage.getItem(`${storageKey}-ch`) ?? 0); } catch { return 0; }
-  });
-  const [fontSizeIndex, setFontSizeIndex] = useState(() => {
-    try { return Number(localStorage.getItem(`${storageKey}-fs`) ?? 1); } catch { return 1; }
-  });
-  const [chapterData, setChapterData] = useState<ChapterData>({ content: "" });
-  const [loading, setLoading] = useState(false);
+export function BookReader({
+  bookId,
+  sourceId,
+  title,
+  chapters,
+  getChapterContent,
+  initialChapter,
+  prefetched,
+  contentError,
+}: Props) {
+  const storageKey = `${STORAGE_KEY_PREFIX}-${bookId}`;
+  const lastChapter = chapters.length - 1;
+
+  // Start from what the server knows. localStorage doesn't exist during server
+  // rendering, so reading it here made server and browser disagree (hydration errors).
+  const [chapterIndex, setChapterIndex] = useState(() => clamp(initialChapter ?? prefetched?.index ?? 0, lastChapter));
+  const [fontSizeIndex, setFontSizeIndex] = useState(1);
+  const [restored, setRestored] = useState(false);
+  const [chapterData, setChapterData] = useState<ChapterData | null>(
+    prefetched ? { content: prefetched.content, html: prefetched.html } : null
+  );
+  const loadedIndexRef = useRef<number | null>(prefetched?.index ?? null);
+  const [loading, setLoading] = useState(!prefetched && chapters.length > 0);
+  const [loadError, setLoadError] = useState<string | null>(null);
+  const [reloadKey, setReloadKey] = useState(0);
   const [sidebarOpen, setSidebarOpen] = useState(false);
   const [summarizeOpen, setSummarizeOpen] = useState(false);
   const [selectedText, setSelectedText] = useState<string | undefined>();
   const [linkCopied, setLinkCopied] = useState(false);
   const contentRef = useRef<HTMLDivElement>(null);
+  const mainRef = useRef<HTMLElement>(null);
 
   const fontSize = FONT_SIZES[fontSizeIndex] ?? 18;
 
-  const mainRef = useRef<HTMLElement>(null);
-
-  // Load chapter content and scroll to top
+  // Restore saved position + font size after mount
   useEffect(() => {
-    let cancelled = false;
-    setLoading(true);
-    setChapterData({ content: "" });
-    mainRef.current?.scrollTo({ top: 0 });
+    try {
+      if (initialChapter === undefined) {
+        const saved = localStorage.getItem(`${storageKey}-ch`);
+        if (saved !== null) setChapterIndex(clamp(Number(saved), lastChapter));
+      }
+      const fs = localStorage.getItem(`${storageKey}-fs`);
+      if (fs !== null) setFontSizeIndex(clamp(Number(fs), FONT_SIZES.length - 1));
+    } catch {}
+    setRestored(true);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
 
-    getChapterContent(chapterIndex)
-      .then((data) => { if (!cancelled) { setChapterData(data); setLoading(false); } })
-      .catch(() => { if (!cancelled) { setChapterData({ content: "Failed to load chapter." }); setLoading(false); } });
-
-    return () => { cancelled = true; };
-  }, [chapterIndex, getChapterContent]);
-
-  // Save position
+  // Save position (only after restoring, so we never overwrite it with the default)
   useEffect(() => {
+    if (!restored) return;
     try {
       localStorage.setItem(`${storageKey}-ch`, String(chapterIndex));
       localStorage.setItem(`${storageKey}-fs`, String(fontSizeIndex));
     } catch {}
-  }, [chapterIndex, fontSizeIndex, storageKey]);
+  }, [restored, chapterIndex, fontSizeIndex, storageKey]);
+
+  // Load chapter content and scroll to top
+  useEffect(() => {
+    if (chapters.length === 0) return;
+    setSelectedText(undefined);
+    mainRef.current?.scrollTo({ top: 0 });
+    if (loadedIndexRef.current === chapterIndex) return; // already on screen (sent with the page)
+
+    let cancelled = false;
+    setLoading(true);
+    setLoadError(null);
+
+    getChapterContent(chapterIndex)
+      .then((data) => {
+        if (cancelled) return;
+        loadedIndexRef.current = chapterIndex;
+        setChapterData(data);
+        setLoading(false);
+      })
+      .catch((err) => {
+        if (cancelled) return;
+        setLoadError(err instanceof Error ? err.message : "Failed to load chapter.");
+        setLoading(false);
+      });
+
+    return () => {
+      cancelled = true;
+    };
+  }, [chapterIndex, getChapterContent, chapters.length, reloadKey]);
+
+  function retry() {
+    loadedIndexRef.current = null;
+    setReloadKey((k) => k + 1);
+  }
 
   // Keyboard shortcuts: [ = prev chapter, ] = next chapter, s = summarize, t = sidebar
   useEffect(() => {
@@ -76,7 +134,8 @@ export function BookReader({ bookId, sourceId, title, chapters, getChapterConten
         e.target instanceof HTMLInputElement ||
         e.target instanceof HTMLTextAreaElement ||
         e.target instanceof HTMLSelectElement
-      ) return;
+      )
+        return;
       if (e.ctrlKey || e.metaKey || e.altKey) return;
 
       switch (e.key) {
@@ -98,10 +157,13 @@ export function BookReader({ bookId, sourceId, title, chapters, getChapterConten
     return () => window.removeEventListener("keydown", handleKeyDown);
   }, [chapters.length]);
 
-  // Text selection for "summarize selection"
-  const handleMouseUp = useCallback(() => {
-    const sel = window.getSelection()?.toString().trim();
-    setSelectedText(sel && sel.length > 20 ? sel : undefined);
+  // Text selection for "summarize selection". Deferred a tick so the browser
+  // finishes updating the selection; also wired to touchend for phones.
+  const captureSelection = useCallback(() => {
+    setTimeout(() => {
+      const sel = window.getSelection()?.toString().trim();
+      setSelectedText(sel && sel.length > 20 ? sel : undefined);
+    }, 0);
   }, []);
 
   function copyChapterLink() {
@@ -214,18 +276,24 @@ export function BookReader({ bookId, sourceId, title, chapters, getChapterConten
                   />
                 ))}
               </div>
-            ) : (
+            ) : loadError ? (
+              <div className="rounded-lg border border-red-200 bg-red-50 px-4 py-3 text-sm text-red-700 dark:border-red-900 dark:bg-red-950/30 dark:text-red-300" role="alert">
+                <p>{loadError}</p>
+                <button onClick={retry} className="btn-secondary mt-3">
+                  Retry
+                </button>
+              </div>
+            ) : chapterData ? (
               <div
                 ref={contentRef}
-                onMouseUp={handleMouseUp}
+                onMouseUp={captureSelection}
+                onTouchEnd={captureSelection}
                 className="reader-content text-gray-900 dark:text-gray-100"
                 style={{ fontSize }}
               >
-                {chapter && (
-                  <h2 className="mb-6 text-2xl font-bold text-gray-900 dark:text-gray-100">{chapter.title}</h2>
-                )}
+                {chapter && <h2 className="mb-6 text-2xl font-bold text-gray-900 dark:text-gray-100">{chapter.title}</h2>}
                 {chapterData.html ? (
-                  // Sanitized HTML from Gutenberg/Standard Ebooks — use prose renderer
+                  // Sanitized HTML from Gutenberg — use prose renderer
                   <div
                     className="prose prose-gray max-w-none dark:prose-invert leading-relaxed"
                     dangerouslySetInnerHTML={{ __html: chapterData.html }}
@@ -234,7 +302,7 @@ export function BookReader({ bookId, sourceId, title, chapters, getChapterConten
                   <div className="whitespace-pre-wrap leading-relaxed">{chapterData.content}</div>
                 )}
               </div>
-            )}
+            ) : null}
           </div>
         </main>
 
@@ -259,7 +327,7 @@ export function BookReader({ bookId, sourceId, title, chapters, getChapterConten
             <SummarizePanel
               bookId={bookId}
               sourceId={sourceId}
-              totalChapters={chapters.length}
+              chapters={chapters}
               currentChapter={chapterIndex}
               selectedText={selectedText}
               onClose={() => setSummarizeOpen(false)}
@@ -284,7 +352,7 @@ export function BookReader({ bookId, sourceId, title, chapters, getChapterConten
         </span>
         <button
           onClick={() => setChapterIndex((i) => Math.min(chapters.length - 1, i + 1))}
-          disabled={chapterIndex === chapters.length - 1}
+          disabled={chapterIndex >= chapters.length - 1}
           className="btn-secondary disabled:opacity-30"
           aria-label="Next chapter (])"
           title="Next chapter (])"

@@ -1,5 +1,6 @@
-export type SourceId = "gutenberg" | "openlibrary" | "standardebooks" | "upload";
-export const VALID_SOURCE_IDS = ["gutenberg", "openlibrary", "standardebooks", "upload"] as const;
+// "standardebooks" was removed: its catalog feeds now require a paid Patrons Circle membership.
+export type SourceId = "gutenberg" | "openlibrary" | "archive" | "loc" | "upload";
+export const VALID_SOURCE_IDS = ["gutenberg", "openlibrary", "archive", "loc", "upload"] as const;
 
 export interface SearchResult {
   id: string;
@@ -16,14 +17,16 @@ export interface Book extends SearchResult {
   subjects?: string[];
   formats?: Record<string, string>;
   pageCount?: number;
+  /** The book's page on the library's own website, where it can be read for free */
+  sourceUrl?: string;
 }
 
 export interface Chapter {
   id: string;
   index: number;
   title: string;
-  content: string;      // plain text — used for word count and summarization
-  html?: string;        // sanitized HTML — used for display in reader when available
+  content: string; // plain text — used for word count and summarization
+  html?: string; // sanitized HTML — used for display in reader when available
   wordCount: number;
 }
 

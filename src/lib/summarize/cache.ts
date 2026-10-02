@@ -1,13 +1,95 @@
 import { mkdirSync, writeFileSync, readFileSync, existsSync } from "fs";
 import { tmpdir } from "os";
 import { join } from "path";
-import type { BookContent, SummaryOptions, SummaryScope } from "@/types";
+import { gzipSync, gunzipSync } from "zlib";
+import { Redis } from "@upstash/redis";
+import type { BookContent, Chapter, SourceId, SummaryOptions, SummaryScope } from "@/types";
+import { createVirtualPages } from "../parsing/chapters";
 
-// ─── Summary cache (in-memory, up to 200 entries) ───────────────────────────
+/*
+ * Why this changed: on Vercel every request can land on a different serverless
+ * instance, so a module-level Map (or /tmp) on one instance is invisible to the
+ * next. Uploads 404'd, and caches rarely hit. If Upstash Redis env vars are set
+ * (Vercel → Storage → Upstash for Redis), everything is shared across instances.
+ * Without them it falls back to per-instance memory, which is fine for local dev.
+ */
 
-const MAX_ENTRIES = 200;
-const cache = new Map<string, string>();
-const order: string[] = [];
+const VERSION = "v3"; // bump to invalidate everything after parser changes
+
+const TTL = {
+  summary: 60 * 60 * 24 * 30, // 30 days
+  notes: 60 * 60 * 24 * 30,
+  content: 60 * 60 * 24 * 7,
+  upload: 60 * 60 * 24, // 24 hours
+};
+
+// globalThis survives hot reloads and is shared between route handlers and pages in dev
+const g = globalThis as unknown as {
+  __recapRedis?: Redis | null;
+  __recapSummaries?: Map<string, string>;
+  __recapNotes?: Map<string, string[]>;
+  __recapContent?: Map<string, BookContent>;
+  __recapUploads?: Map<string, StoredUpload>;
+};
+
+const summaries = (g.__recapSummaries ??= new Map());
+const notesMem = (g.__recapNotes ??= new Map());
+const contentMem = (g.__recapContent ??= new Map());
+const uploadMem = (g.__recapUploads ??= new Map());
+
+function getRedis(): Redis | null {
+  if (g.__recapRedis !== undefined) return g.__recapRedis;
+  const url = process.env.KV_REST_API_URL ?? process.env.UPSTASH_REDIS_REST_URL;
+  const token = process.env.KV_REST_API_TOKEN ?? process.env.UPSTASH_REDIS_REST_TOKEN;
+  g.__recapRedis = url && token ? new Redis({ url, token, automaticDeserialization: false }) : null;
+  return g.__recapRedis;
+}
+
+async function kvGet<T>(key: string): Promise<T | undefined> {
+  const redis = getRedis();
+  if (!redis) return undefined;
+  try {
+    const raw = await redis.get<string>(key);
+    if (!raw) return undefined;
+    return JSON.parse(gunzipSync(Buffer.from(raw, "base64")).toString("utf8")) as T;
+  } catch (err) {
+    console.warn(`[cache] read failed for ${key}:`, err);
+    return undefined;
+  }
+}
+
+async function kvSet(key: string, value: unknown, ttlSeconds: number): Promise<void> {
+  const redis = getRedis();
+  if (!redis) return;
+  try {
+    const packed = gzipSync(JSON.stringify(value)).toString("base64");
+    await redis.set(key, packed, { ex: ttlSeconds });
+  } catch (err) {
+    // e.g. value larger than the Redis plan's max request size — degrade to memory only
+    console.warn(`[cache] write failed for ${key}:`, err);
+  }
+}
+
+function lruGet<V>(map: Map<string, V>, key: string): V | undefined {
+  const v = map.get(key);
+  if (v !== undefined) {
+    map.delete(key);
+    map.set(key, v);
+  }
+  return v;
+}
+
+function lruSet<V>(map: Map<string, V>, key: string, value: V, max: number): void {
+  map.delete(key);
+  map.set(key, value);
+  while (map.size > max) {
+    const oldest = map.keys().next().value;
+    if (oldest === undefined) break;
+    map.delete(oldest);
+  }
+}
+
+// ─── Summaries ───────────────────────────────────────────────────────────────
 
 export function makeCacheKey(
   bookId: string,
@@ -16,81 +98,122 @@ export function makeCacheKey(
   options: SummaryOptions,
   extra?: string
 ): string {
-  return [bookId, sourceId, scope, options.length, options.format, options.spoilerFree ? "sf" : "", extra ?? ""].join(
-    ":"
-  );
+  return [
+    "sum",
+    VERSION,
+    sourceId,
+    bookId,
+    scope,
+    options.length,
+    options.format,
+    options.spoilerFree ? "sf" : "",
+    extra ?? "",
+  ].join(":");
 }
 
-export function getCached(key: string): string | undefined {
-  return cache.get(key);
+export async function getCached(key: string): Promise<string | undefined> {
+  const mem = lruGet(summaries, key);
+  if (mem) return mem;
+  const remote = await kvGet<string>(key);
+  if (remote) lruSet(summaries, key, remote, 200);
+  return remote;
 }
 
-export function setCached(key: string, value: string): void {
-  // Remove existing key from order to avoid duplicate entries
-  const existing = order.indexOf(key);
-  if (existing !== -1) order.splice(existing, 1);
-
-  if (cache.size >= MAX_ENTRIES && !cache.has(key)) {
-    const evict = order.shift();
-    if (evict) cache.delete(evict);
-  }
-  cache.set(key, value);
-  order.push(key);
+export async function setCached(key: string, value: string): Promise<void> {
+  lruSet(summaries, key, value, 200);
+  await kvSet(key, value, TTL.summary);
 }
 
-// ─── Book content cache (in-memory, up to 20 fetched external books) ─────────
+// ─── Whole-book section notes (reused across length/format choices) ─────────
 
-const contentCache = new Map<string, BookContent>();
-
-export function getCachedContent(key: string): BookContent | undefined {
-  return contentCache.get(key);
+export function makeNotesKey(sourceId: string, bookId: string): string {
+  return ["notes", VERSION, sourceId, bookId].join(":");
 }
 
-export function setCachedContent(key: string, content: BookContent): void {
-  if (contentCache.size >= 20) {
-    const first = contentCache.keys().next().value;
-    if (first) contentCache.delete(first);
-  }
-  contentCache.set(key, content);
+export async function getCachedNotes(key: string): Promise<string[] | undefined> {
+  return lruGet(notesMem, key) ?? (await kvGet<string[]>(key));
 }
 
-// ─── Upload store (/tmp with in-memory fallback) ─────────────────────────────
+export async function setCachedNotes(key: string, notes: string[]): Promise<void> {
+  lruSet(notesMem, key, notes, 50);
+  await kvSet(key, notes, TTL.notes);
+}
+
+// ─── Book content (fetched external books) ───────────────────────────────────
+
+// Only chapters are stored remotely; virtual pages are rebuilt on read (halves the size)
+interface StoredContent {
+  bookId: string;
+  sourceId: SourceId;
+  chapters: Chapter[];
+  totalWordCount: number;
+}
+
+function hydrate(s: StoredContent): BookContent {
+  return { ...s, virtualPages: createVirtualPages(s.chapters) };
+}
+
+function dehydrate(c: BookContent): StoredContent {
+  return { bookId: c.bookId, sourceId: c.sourceId, chapters: c.chapters, totalWordCount: c.totalWordCount };
+}
+
+export async function getCachedContent(key: string): Promise<BookContent | undefined> {
+  const fullKey = `content:${VERSION}:${key}`;
+  const mem = lruGet(contentMem, fullKey);
+  if (mem) return mem;
+  const stored = await kvGet<StoredContent>(fullKey);
+  if (!stored) return undefined;
+  const content = hydrate(stored);
+  lruSet(contentMem, fullKey, content, 20);
+  return content;
+}
+
+export async function setCachedContent(key: string, content: BookContent): Promise<void> {
+  const fullKey = `content:${VERSION}:${key}`;
+  lruSet(contentMem, fullKey, content, 20);
+  await kvSet(fullKey, dehydrate(content), TTL.content);
+}
+
+// ─── Uploads ─────────────────────────────────────────────────────────────────
+
+interface StoredUpload {
+  title: string;
+  content: StoredContent;
+}
 
 const UPLOAD_DIR = join(tmpdir(), "recap-uploads");
-const uploadMemory = new Map<string, BookContent>(); // fallback if /tmp unavailable
 
-function ensureUploadDir(): boolean {
+export async function storeUpload(id: string, content: BookContent, title: string): Promise<void> {
+  const record: StoredUpload = { title, content: dehydrate(content) };
+  lruSet(uploadMem, id, record, 20);
+
+  if (getRedis()) {
+    await kvSet(`upload:${VERSION}:${id}`, record, TTL.upload);
+    return;
+  }
+
+  // Local-dev fallback
   try {
     mkdirSync(UPLOAD_DIR, { recursive: true });
-    return true;
+    writeFileSync(join(UPLOAD_DIR, `${id}.json`), JSON.stringify(record), "utf-8");
   } catch {
-    return false;
+    /* memory only */
   }
 }
 
-export function storeUpload(id: string, content: BookContent): void {
-  // Try filesystem first — survives within the same container lifetime
-  if (ensureUploadDir()) {
+export async function getUpload(id: string): Promise<{ title: string; content: BookContent } | undefined> {
+  let record = lruGet(uploadMem, id) ?? (await kvGet<StoredUpload>(`upload:${VERSION}:${id}`));
+
+  if (!record) {
     try {
-      writeFileSync(join(UPLOAD_DIR, `${id}.json`), JSON.stringify(content), "utf-8");
-      return;
+      const path = join(UPLOAD_DIR, `${id}.json`);
+      if (existsSync(path)) record = JSON.parse(readFileSync(path, "utf-8")) as StoredUpload;
     } catch {
-      // fall through to memory
+      /* not found */
     }
   }
-  uploadMemory.set(id, content);
-}
 
-export function getUpload(id: string): BookContent | undefined {
-  // Try filesystem first
-  try {
-    const path = join(UPLOAD_DIR, `${id}.json`);
-    if (existsSync(path)) {
-      const raw = readFileSync(path, "utf-8");
-      return JSON.parse(raw) as BookContent;
-    }
-  } catch {
-    // fall through
-  }
-  return uploadMemory.get(id);
+  if (!record) return undefined;
+  lruSet(uploadMem, id, record, 20);
+  return { title: record.title, content: hydrate(record.content) };
 }
